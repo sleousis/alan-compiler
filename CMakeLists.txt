@@ -31,9 +31,11 @@ target_include_directories(alanc PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}
 target_include_directories(alanc SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 # The project's own sources, generated ones included, must build without warnings.
 if(MSVC)
-  # LLVM's headers instantiate standard library templates that warn (C4244),
-  # so the <...> headers count as external too.
-  target_compile_options(alanc PRIVATE /W3 /WX /external:anglebrackets /external:W0)
+  target_compile_options(alanc PRIVATE /W3 /WX)
+  # InstructionWorklist.h in LLVM builds a std::pair that narrows, and the
+  # standard library reports that C4244 inside <utility> whatever the external
+  # warning level is. This turns C4244 off only inside the standard headers.
+  target_compile_definitions(alanc PRIVATE _STL_EXTRA_DISABLED_WARNINGS=4244)
 else()
   target_compile_options(alanc PRIVATE -Wall -Werror)
 endif()
