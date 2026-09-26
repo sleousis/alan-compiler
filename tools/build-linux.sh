@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds alanc and libalanrt.a for this Linux host into dist/<platform>/.
 # LLVM comes from LLVM_DIR when set, else from /usr/lib/llvm-23, else from
-# the official LLVM release package. The runtime is built with zig
+# the official LLVM release package, which needs GCC 11 or newer as the C++
+# compiler (set CC and CXX). The runtime is built with zig
 # (ALAN_ZIG, or zig on the PATH).
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,9 +24,9 @@ if [ -z "${LLVM_DIR:-}" ]; then
       curl -fsSL -o "$TMP/$NAME.tar.xz" \
         "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$NAME.tar.xz"
       # Clang, MLIR, LLDB and Flang libraries are not needed.
-      tar -xJf "$TMP/$NAME.tar.xz" -C "$TMP" --exclude='libclang*' \
-        --exclude='libMLIR*' --exclude='liblldb*' --exclude='libflang*' \
-        --exclude='libFortran*'
+      tar -xJf "$TMP/$NAME.tar.xz" -C "$TMP" --exclude='*/lib/libclang*' \
+        --exclude='*/lib/libMLIR*' --exclude='*/lib/liblldb*' \
+        --exclude='*/lib/libflang*' --exclude='*/lib/libFortran*'
       rm "$TMP/$NAME.tar.xz"
     fi
     LLVM_DIR="$TMP/$NAME/lib/cmake/llvm"

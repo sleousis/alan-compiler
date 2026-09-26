@@ -28,9 +28,10 @@ if (-not $LlvmDir) {
     if (-not (Test-Path $extract)) {
         $archive = Join-Path $Tmp "$name.tar.xz"
         Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$name.tar.xz" -OutFile $archive
-        # Clang, MLIR, LLDB and Flang libraries are not needed.
-        tar -xf $archive -C $Tmp --exclude='clang*.lib' --exclude='libclang*' `
-            --exclude='MLIR*' --exclude='liblldb*' --exclude='flang*' --exclude='Fortran*'
+        # Clang, MLIR, LLDB and Flang libraries are not needed. The patterns
+        # match whole paths, so none may match the top folder clang+llvm-*.
+        tar -xf $archive -C $Tmp --exclude='*/lib/clang[A-Z]*' --exclude='*/lib/libclang*' `
+            --exclude='*/lib/MLIR*' --exclude='*/lib/liblldb*' --exclude='*/lib/flang*' --exclude='*/lib/Fortran*'
         if ($LASTEXITCODE -ne 0) { throw 'extracting LLVM failed' }
         Remove-Item $archive
     }

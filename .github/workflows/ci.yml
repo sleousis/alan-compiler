@@ -53,8 +53,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           apt-get update
-          apt-get install -y git curl ca-certificates xz-utils g++ make flex m4 python3 \
+          apt-get install -y git curl ca-certificates gnupg xz-utils make flex m4 python3 \
             libzstd-dev zlib1g-dev libxml2-dev
+          # The LLVM release libraries need a newer libstdc++ than Ubuntu 20.04 has.
+          # alanc links it statically, so GCC 14 comes from the toolchain PPA.
+          curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x60C317803A41BA51845E371A1E9377A2BA9EF27F" \
+            | gpg --dearmor > /etc/apt/trusted.gpg.d/ubuntu-toolchain-r.gpg
+          echo "deb http://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu focal main" \
+            > /etc/apt/sources.list.d/ubuntu-toolchain-r.list
+          apt-get update
+          apt-get install -y gcc-14 g++-14
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
           curl -fsSL "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION-linux-${{ matrix.cmake }}.tar.gz" \
             | tar -xz -C /opt
           echo "/opt/cmake-$CMAKE_VERSION-linux-${{ matrix.cmake }}/bin" >> "$GITHUB_PATH"
@@ -91,9 +101,32 @@ jobs:
         if: runner.os == 'Linux'
         run: sh tools/build-linux.sh
 
+      - name: Restore LLVM built from source
+        id: llvm-cache
+        if: matrix.platform == 'macos-x64'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/llvm-*-x86_64-macos
+          key: llvm-src-macos-x64-${{ hashFiles('tools/versions.env') }}
+
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: sh tools/build-macos.sh
+
+      - name: Check for LLVM built from source
+        id: llvm-built
+        if: always() && matrix.platform == 'macos-x64' && steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          if ls "$RUNNER_TEMP"/llvm-*-x86_64-macos/lib/cmake/llvm/LLVMConfig.cmake >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save LLVM built from source
+        if: always() && steps.llvm-built.outputs.found == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/llvm-*-x86_64-macos
+          key: llvm-src-macos-x64-${{ hashFiles('tools/versions.env') }}
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
