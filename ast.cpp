@@ -1925,7 +1925,7 @@ Type_T createString(char* theString){
 	theType->kind = Type_tag::TYPE_CHAR;
 	theType->isArray = 1;
 	theType->refType = NULL;
-	theType->size = strlen(theString);
+	theType->size = static_cast<RepInteger>(strlen(theString));
 	theType->refCount = 0;
 	return theType;
 }
