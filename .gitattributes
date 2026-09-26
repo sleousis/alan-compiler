@@ -3,3 +3,6 @@ alan text eol=lf
 *.sh text eol=lf
 alan_lib_v2/change_syms text eol=lf
 Makefile text eol=lf
+# Test inputs and expected output are byte-exact program data
+tests/inputs/*.txt -text
+tests/expected/*.txt -text

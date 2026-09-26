@@ -1,0 +1,4 @@
+Give me first fraction:  
+nominator: denominator: Give me second fraction: 
+nominator: denominator: The Sum is: 
+5 6

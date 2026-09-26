@@ -1,0 +1,4 @@
+Give me dimension:
+Give me table 3x3
+5	-- the average of each line is 2 5 8 
+5	-- the average of each column is 4 5 6 

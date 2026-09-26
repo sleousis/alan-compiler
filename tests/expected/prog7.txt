@@ -1,0 +1,4 @@
+Give me dimension:
+Give me table 3x3
+7	-- the smallest of each line is 1 4 7 
+7	-- the largest of each column is 7 8 9 

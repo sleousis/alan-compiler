@@ -1,0 +1,14 @@
+Num of Operations: 
+Operator: 
+Give me a fraction:
+nominator: denominator: 
+Give me a fraction:
+nominator: denominator: 
+The Result is: 5 6
+
+Operator: 
+Give me a fraction:
+nominator: denominator: 
+Give me a fraction:
+nominator: denominator: 
+The Result is: 1 2

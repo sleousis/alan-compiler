@@ -1,0 +1,5 @@
+Give me new alphabet:
+Tell me encrypt or decrypt
+Give me plain text:
+Ciphertext is: 
+Itssg vgksr

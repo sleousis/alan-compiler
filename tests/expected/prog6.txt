@@ -1,0 +1,5 @@
+Give me the number of strings: yes
+no
+yes
+
+Success: 2/3

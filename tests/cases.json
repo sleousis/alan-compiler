@@ -1,0 +1,140 @@
+[
+  {
+    "name": "BubbleSort",
+    "file": "Examples/BubbleSort.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "cryptography",
+    "file": "Examples/cryptography.alan",
+    "input": "inputs/cryptography.txt",
+    "opt": true
+  },
+  {
+    "name": "FirstNumbers",
+    "file": "Examples/FirstNumbers.alan",
+    "input": "inputs/FirstNumbers.txt",
+    "opt": true
+  },
+  {
+    "name": "HanoiTowers",
+    "file": "Examples/HanoiTowers.alan",
+    "input": "inputs/HanoiTowers.txt",
+    "opt": true
+  },
+  {
+    "name": "HelloWorld",
+    "file": "Examples/HelloWorld.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "papariatest",
+    "file": "Examples/papariatest.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "prog1",
+    "file": "Examples/prog1.alan",
+    "input": "inputs/prog1.txt",
+    "opt": true
+  },
+  {
+    "name": "prog14",
+    "file": "Examples/prog14.alan",
+    "input": "inputs/prog14.txt",
+    "opt": true
+  },
+  {
+    "name": "prog16",
+    "file": "Examples/prog16.alan",
+    "input": "inputs/prog16.txt",
+    "opt": true
+  },
+  {
+    "name": "prog17",
+    "file": "Examples/prog17.alan",
+    "input": "inputs/prog17.txt",
+    "opt": true
+  },
+  {
+    "name": "prog18",
+    "file": "Examples/prog18.alan",
+    "input": "inputs/prog18.txt",
+    "opt": true
+  },
+  {
+    "name": "prog19",
+    "file": "Examples/prog19.alan",
+    "input": "inputs/prog19.txt",
+    "opt": true
+  },
+  {
+    "name": "prog2",
+    "file": "Examples/prog2.alan",
+    "input": "inputs/prog2.txt",
+    "opt": true
+  },
+  {
+    "name": "prog20",
+    "file": "Examples/prog20.alan",
+    "input": "inputs/prog20.txt",
+    "opt": true
+  },
+  {
+    "name": "prog3",
+    "file": "Examples/prog3.alan",
+    "input": "inputs/prog3.txt",
+    "opt": true
+  },
+  {
+    "name": "prog4",
+    "file": "Examples/prog4.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "prog5",
+    "file": "Examples/prog5.alan",
+    "input": "inputs/prog5.txt",
+    "opt": true
+  },
+  {
+    "name": "prog6",
+    "file": "Examples/prog6.alan",
+    "input": "inputs/prog6.txt",
+    "opt": true
+  },
+  {
+    "name": "prog7",
+    "file": "Examples/prog7.alan",
+    "input": "inputs/prog7.txt",
+    "opt": true
+  },
+  {
+    "name": "prog8",
+    "file": "Examples/prog8.alan",
+    "input": "inputs/prog8.txt",
+    "opt": true
+  },
+  {
+    "name": "ReverseHelloWorld",
+    "file": "Examples/ReverseHelloWorld.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "test_declaration",
+    "file": "Examples/test_declaration.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "test",
+    "file": "Examples/test",
+    "input": "inputs/test.txt",
+    "opt": true
+  }
+]

@@ -1,0 +1,4 @@
+Give me a number:
+Give me table A[3]:
+Give me table B[3]:
+no 3 -1
