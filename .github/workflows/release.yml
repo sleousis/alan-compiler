@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  LLVM_VERSION: "23"
+  BISON_VERSION: "3.8.2"
+  NASM_VERSION: "3.02"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # Ubuntu 20.04 (glibc 2.31) so the compiler also runs on older distributions
+    container: ubuntu:20.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install base packages
+        run: |
+          apt-get update
+          apt-get install -y git wget ca-certificates gnupg g++ make flex m4 xz-utils
+
+      - uses: actions/checkout@v7
+
+      - name: Install LLVM and clang from apt.llvm.org
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key > /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-$LLVM_VERSION main" > /etc/apt/sources.list.d/llvm.list
+          apt-get update
+          apt-get install -y llvm-$LLVM_VERSION-dev clang-$LLVM_VERSION libzstd-dev zlib1g-dev libxml2-dev libedit-dev libcurl4-openssl-dev
+          echo "/usr/lib/llvm-$LLVM_VERSION/bin" >> "$GITHUB_PATH"
+
+      - name: Build Bison and NASM from source
+        run: |
+          cd /tmp
+          wget -q https://ftp.gnu.org/gnu/bison/bison-$BISON_VERSION.tar.xz
+          tar xf bison-$BISON_VERSION.tar.xz
+          (cd bison-$BISON_VERSION && ./configure --prefix=/opt/bison && make -j"$(nproc)" && make install)
+          wget -q https://www.nasm.us/pub/nasm/releasebuilds/$NASM_VERSION/nasm-$NASM_VERSION.tar.xz
+          tar xf nasm-$NASM_VERSION.tar.xz
+          (cd nasm-$NASM_VERSION && ./configure --prefix=/opt/nasm && make -j"$(nproc)" && make install)
+          echo "/opt/bison/bin" >> "$GITHUB_PATH"
+          echo "/opt/nasm/bin" >> "$GITHUB_PATH"
+
+      - name: Build the compiler and the runtime library
+        run: |
+          llvm-config --version
+          bison --version | head -1
+          nasm -v
+          make -j"$(nproc)"
+          cd alan_lib_v2
+          rm -f lib.a
+          ./libs.sh
+
+      - name: Smoke test
+        run: |
+          ./alan -x Examples/HelloWorld.alan
+          ./alan -O -x Examples/BubbleSort.alan
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          case "$VERSION" in v*) ;; *) VERSION="dev" ;; esac
+          NAME="alanc-$VERSION-linux-x86_64"
+          mkdir -p "$NAME/alan_lib_v2"
+          cp alanc alan README.md "$NAME/"
+          cp alan_lib_v2/lib.a "$NAME/alan_lib_v2/"
+          cp -r Examples "$NAME/"
+          cat > "$NAME/HOW-TO-RUN.txt" <<EOF
+          Alan compiler $VERSION for Linux x86-64
+
+          Requirements: glibc 2.31 or newer (Ubuntu 20.04 or later) and LLVM 23
+          with clang 23 from apt.llvm.org (packages llvm-23 and clang-23).
+          alanc needs libLLVM.so.23.1 from those packages.
+
+          Put the unsuffixed LLVM tools first on the PATH:
+            export PATH=/usr/lib/llvm-23/bin:\$PATH
+
+          Run the alan script from this folder:
+            ./alan -x Examples/HelloWorld.alan
+            ./alan -O Examples/BubbleSort.alan && ./BubbleSort/BubbleSort
+
+          ./alan -h lists all options. See README.md for details.
+          EOF
+          tar czf "$NAME.tar.gz" "$NAME"
+          echo "ASSET=$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.ASSET }}
+          body: |
+            This release contains the Alan compiler (alanc) for Linux x86-64, built with LLVM 23 on Ubuntu 20.04.
+            The tarball also holds the alan driver script, the runtime library alan_lib_v2/lib.a and the example programs.
+            To use it you need LLVM 23 and clang 23 from apt.llvm.org, with /usr/lib/llvm-23/bin first on the PATH.
+            Extract the tarball and run ./alan -x Examples/HelloWorld.alan from its folder. HOW-TO-RUN.txt has the details.

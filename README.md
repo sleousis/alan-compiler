@@ -11,6 +11,21 @@ A compiler for Alan, a small Pascal/C-like teaching language. It was written as 
 - Example Alan programs in `Examples/`.
 - The language specification (`alan2018.pdf`).
 
+## Download
+
+The [Releases page](https://github.com/sleousis/alan-compiler/releases) has a ready-built compiler for Linux x86-64.
+
+- `alanc-<version>-linux-x86_64.tar.gz` holds `alanc`, the `alan` driver script, the runtime library `alan_lib_v2/lib.a`, the example programs and a short `HOW-TO-RUN.txt`.
+
+It was built on Ubuntu 20.04 and runs there and on newer distributions. You still need LLVM 23 and clang 23 from [apt.llvm.org](https://apt.llvm.org) (the `llvm-23` and `clang-23` packages), because `alanc` uses `libLLVM.so.23.1` and the `alan` script calls `llc` and `clang`. To try it:
+
+```
+tar xzf alanc-v1.0.0-linux-x86_64.tar.gz
+cd alanc-v1.0.0-linux-x86_64
+export PATH=/usr/lib/llvm-23/bin:$PATH
+./alan -x Examples/HelloWorld.alan
+```
+
 ## Tech stack
 
 These are the versions the compiler was last built and tested with (September 2026):
