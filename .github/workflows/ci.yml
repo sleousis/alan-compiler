@@ -142,16 +142,20 @@ jobs:
           python3 tests/run_errors.py --alanc dist/${{ matrix.platform }}/bin/alanc
 
       - name: Diagnose (temporary)
-        if: failure() && runner.os == 'macOS'
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 15
         env:
           ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
         run: |
-          set +e
-          p=dist/${{ matrix.platform }}/bin/alanc
-          $p check Examples/HelloWorld.alan; echo "check rc=$?"
-          $p Examples/HelloWorld.alan > /dev/null; echo "ir rc=$?"
-          lldb --batch -o run -k bt -k quit -- $p run Examples/HelloWorld.alan
-          true
+          $hw = Join-Path $env:RUNNER_TEMP 'hw.exe'
+          $t = Measure-Command { & dist/${{ matrix.platform }}/bin/alanc.exe build Examples/HelloWorld.alan -o $hw 2>&1 | Out-Host }
+          "alanc build: exit $LASTEXITCODE after $([int]$t.TotalSeconds) s"
+          if (Test-Path $hw) { & $hw; "hw exit $LASTEXITCODE" }
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP 'h.c') -Value 'int main(void){return 3;}'
+          & $env:ALAN_ZIG cc -target ${{ matrix.zig == 'x86_64-windows' && 'x86_64' || 'aarch64' }}-windows-gnu (Join-Path $env:RUNNER_TEMP 'h.c') -o (Join-Path $env:RUNNER_TEMP 'h.exe')
+          "zig cc: exit $LASTEXITCODE"
+          exit 0
 
       - name: Test (Windows)
         if: runner.os == 'Windows'

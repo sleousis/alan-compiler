@@ -184,6 +184,11 @@ static int cmd_run(const char *argv0, const BuildOptions &o) {
     llvm::sys::fs::remove(path);
     return rc;
   }
+#ifndef _WIN32
+  /* The temporary file is created without execute permission, and zig's
+     Mach-O linker keeps the mode of the file it overwrites. */
+  llvm::sys::fs::setPermissions(path, llvm::sys::fs::owner_all);
+#endif
   std::vector<llvm::StringRef> refs = {path};
   std::string execErr;
   rc = llvm::sys::ExecuteAndWait(path, refs, std::nullopt, {}, 0, 0, &execErr);
