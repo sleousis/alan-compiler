@@ -241,3 +241,5 @@ jobs:
           if-no-files-found: error
           # the archive is already compressed
           compression-level: 0
+          # a release keeps its bundles for 90 days, a plain CI run for 7
+          retention-days: ${{ inputs.version && 90 || 7 }}

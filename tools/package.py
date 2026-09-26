@@ -20,13 +20,15 @@ def main():
     name = f"alan-{a.version}-{a.platform}"
     out = ROOT / "out"
     if a.platform.startswith("windows-"):
-        with zipfile.ZipFile(out / f"{name}.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        archive = out / f"{name}.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
             for p in stage.rglob("*"):
                 z.write(p, p.relative_to(stage.parent))
     else:
-        with tarfile.open(out / f"{name}.tar.gz", "w:gz") as t:
+        archive = out / f"{name}.tar.gz"
+        with tarfile.open(archive, "w:gz") as t:
             t.add(stage, arcname="alan")
-    print(out / name)
+    print(archive)
 
 if __name__ == "__main__":
     main()

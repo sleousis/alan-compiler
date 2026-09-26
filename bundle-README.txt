@@ -14,13 +14,15 @@ Add the bin folder to your PATH, then run a program:
 
   alanc run hello.alan
 
-On Linux and macOS, for example:
+Replace <folder> below with the folder where you extracted alan.
 
-  export PATH="$HOME/alan/bin:$PATH"
+On Linux and macOS:
+
+  export PATH="<folder>/alan/bin:$PATH"
 
 On Windows, in PowerShell:
 
-  $env:Path = "$HOME\alan\bin;" + $env:Path
+  $env:Path = "<folder>\alan\bin;" + $env:Path
 
 To keep it, add the bin folder to PATH in your shell profile or in the
 Windows environment variable settings.
