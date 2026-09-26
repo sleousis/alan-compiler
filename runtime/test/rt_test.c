@@ -25,5 +25,13 @@ int main(void) {
     alan_writeChar('\n');
     alan_writeInteger(alan_extend(255)); alan_writeChar('\n');
     alan_writeInteger(alan_shrink(300)); alan_writeChar('\n');
+    /* integer parsing wraps like parsei.asm */
+    int32_t v;
+    v = alan_readInteger(); alan_writeInteger(v); printf(" %d\n", v);  /* 65636 */
+    v = alan_readInteger(); alan_writeInteger(v); printf(" %d\n", v);  /* 40000 */
+    v = alan_readInteger(); alan_writeInteger(v); printf(" %d\n", v);  /* 32768 */
+    v = alan_readInteger(); alan_writeInteger(v); printf(" %d\n", v);  /* -32768 */
+    v = alan_readInteger(); alan_writeInteger(v); printf(" %d\n", v);  /* 70000 */
+    v = alan_readInteger(); alan_writeInteger(v); printf(" %d\n", v);  /* -70000 */
     return 0;
 }

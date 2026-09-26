@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <string.h>
 #include "alanrt.h"
 
 static int next_byte(void) { fflush(stdout); return getchar(); }
@@ -19,7 +18,7 @@ void alan_readString(int32_t size, char *buf) {
     int32_t n = 0;
     int c;
     fflush(stdout);
-    while (n < size - 1 && (c = getchar()) != EOF && c != '\n') buf[n++] = (char)c;
+    while (size > 0 && n < size - 1 && (c = getchar()) != EOF && c != '\n') buf[n++] = (char)c;
     if (n > 0 && buf[n - 1] == '\r') n--;
     if (n == size - 1) {                     /* drop the rest of an over-long line */
         while ((c = getchar()) != EOF && c != '\n') {}
