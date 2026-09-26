@@ -4,6 +4,8 @@
 #define T_eof 0
 
 int lineno = 1;
+/* Line where the outermost (* comment starts, for an unterminated one. */
+static int comment_line;
 
 void yyerror (const char msg[]);
 %}
@@ -42,21 +44,18 @@ S [!|&<>()\[\]{},:+\-*%/;]
 \-\-.*                     	{ }
 
 "(*" {
+  comment_line = lineno;
   yy_push_state(comment);
 }
 <comment>{
-  [^"*)"\n]*"*)" {
-    yy_pop_state();
-  }
-
-  [^"*)"\n]*"(*" {
-    yy_push_state(comment);
-  }
-
-  [^"*)"\n]*\n { ++lineno; }
-
-  . { /* the same error as flex -s gives for unmatched input */
-    YY_FATAL_ERROR("flex scanner jammed");
+  "(*"       { yy_push_state(comment); }
+  "*)"       { yy_pop_state(); }
+  [^*()\n]+  { }
+  [*()]      { }
+  \n         { ++lineno; }
+  <<EOF>>    {
+    lineno = comment_line;
+    yyerror("Unterminated comment");
   }
 }
 

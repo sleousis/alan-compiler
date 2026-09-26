@@ -1,0 +1,3 @@
+42
+an empty comment (***) is fine
+(* not a comment in a string *)

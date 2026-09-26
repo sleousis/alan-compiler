@@ -1,0 +1,6 @@
+main () : proc
+(* a comment over
+   lines with * ) and " *)
+{
+  y = 3;
+}

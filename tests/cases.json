@@ -130,5 +130,11 @@
     "file": "Examples/test_declaration.alan",
     "input": null,
     "opt": true
+  },
+  {
+    "name": "comments",
+    "file": "tests/comments/comments.alan",
+    "input": null,
+    "opt": true
   }
 ]

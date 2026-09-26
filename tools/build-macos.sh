@@ -92,6 +92,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$LLVM_DIR" "$@" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
   -DBISON_EXECUTABLE="$BREW_PREFIX/opt/bison/bin/bison" \
   -DFLEX_EXECUTABLE="$BREW_PREFIX/opt/flex/bin/flex"
+# Show the flags alanc compiles with, so the log shows -Werror and the
+# -isystem LLVM includes.
+grep -E '^C(XX)?_(FLAGS|INCLUDES)' build/CMakeFiles/alanc.dir/flags.make
 cmake --build build --config Release --parallel "$(sysctl -n hw.ncpu)"
 
 # alanc must only depend on libraries that every Mac has.

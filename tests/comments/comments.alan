@@ -1,0 +1,16 @@
+(* Comments may hold any text: * and ) and " and ( and **. *)
+main () : proc
+  (* nested: (* inner *) still inside the outer comment *)
+  x : int;
+  (* a comment over lines
+     with 2 * 3 = 6, f(x), "quoted" text,
+     (* and a nested one
+        over lines too *) and stars ** before the end *)
+{
+  -- a line comment with (* in it
+  x = 6 (* inside an expression *) * 7;
+  writeInteger(x);
+  writeString("\n");
+  (***) writeString("an empty comment (***) is fine\n");
+  writeString("(* not a comment in a string *)\n");
+}

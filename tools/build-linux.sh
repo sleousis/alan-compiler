@@ -35,6 +35,9 @@ fi
 
 cd "$ROOT"
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$LLVM_DIR"
+# Show the flags alanc compiles with, so the log shows -Werror and the
+# -isystem LLVM includes.
+grep -E '^C(XX)?_(FLAGS|INCLUDES)' build/CMakeFiles/alanc.dir/flags.make
 cmake --build build --config Release --parallel "$(nproc)"
 # alanc must only depend on glibc.
 echo "NEEDED entries of build/alanc:"

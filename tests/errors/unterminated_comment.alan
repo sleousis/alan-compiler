@@ -1,0 +1,6 @@
+main () : proc
+{
+  writeString("hi\n");
+}
+(* this comment
+   never ends *
