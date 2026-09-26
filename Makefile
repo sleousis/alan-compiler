@@ -2,7 +2,7 @@
 
 CXX=g++
 CXXFLAGS=-Wall -g -std=c++17 `llvm-config --cxxflags`
-LDFLAGS=`llvm-config --ldflags --system-libs --libs all`
+LDFLAGS=`llvm-config --link-static --ldflags --libs core support target x86 aarch64 passes` `llvm-config --link-static --system-libs`
 
 default: alanc
 
@@ -21,7 +21,11 @@ ast.o: ast.cpp ast.hpp
 %.o: %.cpp
 		$(CXX) $(CXXFLAGS) -c $<
 
-alanc: lexer.o parser.o ast.o error.o general.o symbol.o cli.o
+emit.o: emit.cpp emit.hpp
+
+cli.o: cli.cpp cli.hpp emit.hpp
+
+alanc: lexer.o parser.o ast.o error.o general.o symbol.o cli.o emit.o
 	$(CXX) $(CXXFLAGS) -o alanc $^ $(LDFLAGS)
 
 clean:
