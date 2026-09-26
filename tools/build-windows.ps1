@@ -1,6 +1,6 @@
 # Builds alanc.exe and libalanrt.a for this Windows host into dist\<platform>\.
-# Downloads the official LLVM release package into $env:RUNNER_TEMP (or
-# %TEMP%) and uses win_flex_bison. The runtime is built with zig
+# Downloads the official LLVM release package and win_flex_bison into
+# $env:RUNNER_TEMP (or %TEMP%). The runtime is built with zig
 # ($env:ALAN_ZIG, or zig on the PATH).
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -38,28 +38,18 @@ if (-not $LlvmDir) {
     $LlvmDir = Join-Path $extract 'lib\cmake\llvm'
 }
 
-# win_flex_bison
-$Bison = Get-Command win_bison.exe -ErrorAction SilentlyContinue
-if (-not $Bison -and (Get-Command choco -ErrorAction SilentlyContinue)) {
-    choco install winflexbison3 -y --no-progress
-    if ($LASTEXITCODE -ne 0) { throw 'choco install winflexbison3 failed' }
-    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
-    $Bison = Get-Command win_bison.exe -ErrorAction SilentlyContinue
+# win_flex_bison 2.5.25 (bison 3.8.2, flex 2.6.4). The runners may have an
+# older copy with bison 3.7 on the PATH, so always use this one. It is x64
+# and runs under emulation on ARM64.
+$wfb = Join-Path $Tmp 'win_flex_bison-2.5.25'
+if (-not (Test-Path (Join-Path $wfb 'win_bison.exe'))) {
+    $zip = Join-Path $Tmp 'win_flex_bison.zip'
+    Invoke-WebRequest -Uri 'https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip' -OutFile $zip
+    Expand-Archive -Path $zip -DestinationPath $wfb -Force
+    Remove-Item $zip
 }
-if ($Bison) {
-    $BisonExe = $Bison.Source
-    $FlexExe = (Get-Command win_flex.exe).Source
-} else {
-    $wfb = Join-Path $Tmp 'win_flex_bison'
-    if (-not (Test-Path (Join-Path $wfb 'win_bison.exe'))) {
-        $zip = Join-Path $Tmp 'win_flex_bison.zip'
-        Invoke-WebRequest -Uri 'https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip' -OutFile $zip
-        Expand-Archive -Path $zip -DestinationPath $wfb -Force
-        Remove-Item $zip
-    }
-    $BisonExe = Join-Path $wfb 'win_bison.exe'
-    $FlexExe = Join-Path $wfb 'win_flex.exe'
-}
+$BisonExe = Join-Path $wfb 'win_bison.exe'
+$FlexExe = Join-Path $wfb 'win_flex.exe'
 
 # alanc
 Push-Location $Root

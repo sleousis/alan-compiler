@@ -19,7 +19,7 @@ build_llvm_from_source() {
   src="llvm-project-$LLVM_VERSION.src"
   brew install ninja
   curl -fsSL -o "$TMP/$src.tar.xz" "$RELEASES/$src.tar.xz"
-  tar -xJf "$TMP/$src.tar.xz" -C "$TMP" "$src/llvm" "$src/cmake" "$src/third-party"
+  tar -xJf "$TMP/$src.tar.xz" -C "$TMP" "$src/llvm" "$src/cmake" "$src/third-party" "$src/libc"
   rm "$TMP/$src.tar.xz"
   cmake -G Ninja -S "$TMP/$src/llvm" -B "$TMP/llvm-build" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
@@ -74,8 +74,19 @@ case "$(uname -m)" in
   *) echo "unsupported CPU: $(uname -m)" >&2; exit 1 ;;
 esac
 
+# The release package holds its libraries as LLVM 23 bitcode, which Apple's
+# linker cannot read, so build with the package's own clang and lld.
+set --
+LLVM_ROOT="$(cd "$LLVM_DIR/../../.." && pwd)"
+if [ -x "$LLVM_ROOT/bin/clang++" ] && [ -x "$LLVM_ROOT/bin/ld64.lld" ]; then
+  SDKROOT="$(xcrun --show-sdk-path)"
+  export SDKROOT
+  set -- -DCMAKE_C_COMPILER="$LLVM_ROOT/bin/clang" \
+    -DCMAKE_CXX_COMPILER="$LLVM_ROOT/bin/clang++" -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+fi
+
 cd "$ROOT"
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$LLVM_DIR" \
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$LLVM_DIR" "$@" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
   -DBISON_EXECUTABLE="$BREW_PREFIX/opt/bison/bin/bison" \
   -DFLEX_EXECUTABLE="$BREW_PREFIX/opt/flex/bin/flex"
