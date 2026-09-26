@@ -13,11 +13,19 @@ A compiler for Alan, a small Pascal/C-like teaching language. It was written as 
 
 ## Tech stack
 
-- C++ (g++)
-- flex and bison
-- LLVM 10 (C++ API, `llc`) and clang 10
-- NASM (only to rebuild the runtime library)
-- Bash
+These are the versions the compiler was last built and tested with (September 2026):
+
+| Tool | Version |
+| --- | --- |
+| LLVM (C++ API, `llc`) and clang | 23.1.2 |
+| C++ standard | C++17 (required by LLVM 23) |
+| C++ compiler | g++ 9.4 or clang++ 23.1.2 |
+| GNU Bison | 3.8.2 |
+| flex | 2.6.4 |
+| NASM | 3.02 (only to rebuild the runtime library) |
+| GNU Make, Bash | from Ubuntu 20.04 |
+
+The project was first written for an older LLVM with typed pointers (it built with LLVM 10). The code generator now uses opaque pointers and the new pass manager, as current LLVM requires.
 
 ## Repository layout
 
@@ -37,20 +45,33 @@ A compiler for Alan, a small Pascal/C-like teaching language. It was written as 
 
 ## Prerequisites
 
-The compiler builds and runs on Linux x86-64. It was verified on Ubuntu 20.04 (also under WSL on Windows) with:
+The compiler builds and runs on Linux x86-64. It was verified on Ubuntu 20.04 under WSL on Windows.
+
+LLVM and clang 23 come from [apt.llvm.org](https://apt.llvm.org):
 
 ```
-sudo apt-get install g++ make flex bison llvm-10-dev clang-10 nasm
+wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-23 main" | sudo tee /etc/apt/sources.list.d/llvm-23.list
+sudo apt-get update
+sudo apt-get install g++ make flex llvm-23-dev clang-23 libzstd-dev zlib1g-dev libxml2-dev libedit-dev libcurl4-openssl-dev
 ```
 
-`nasm` is only needed to rebuild `alan_lib_v2/lib.a`.
-
-The code uses the LLVM C++ API with typed pointers and the legacy pass manager. It builds with LLVM 10. Newer LLVM versions (15 and later) removed APIs it uses and will not work without code changes.
-
-The Makefile and the `alan` script call `llvm-config`, `llc` and `clang` without a version suffix. With the Ubuntu `llvm-10` packages, put the LLVM 10 tools first on the `PATH`:
+Use the matching `llvm-toolchain-<codename>-23` line on other Ubuntu releases. Newer distributions may ship recent enough Bison and NASM packages. Ubuntu 20.04 does not, so Bison 3.8.2 and NASM 3.02 were built from the official source releases:
 
 ```
-export PATH=/usr/lib/llvm-10/bin:$PATH
+wget https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz
+tar xf bison-3.8.2.tar.xz && cd bison-3.8.2
+./configure --prefix=/mnt/d/tools/bison-3.8.2 && make && make install
+cd ..
+wget https://www.nasm.us/pub/nasm/releasebuilds/3.02/nasm-3.02.tar.xz
+tar xf nasm-3.02.tar.xz && cd nasm-3.02
+./configure --prefix=/mnt/d/tools/nasm-3.02 && make && make install
+```
+
+The Makefile and the `alan` script call `llvm-config`, `llc`, `clang`, `bison` and `nasm` without a version suffix. Put the tools first on the `PATH`:
+
+```
+export PATH=/usr/lib/llvm-23/bin:/mnt/d/tools/bison-3.8.2/bin:/mnt/d/tools/nasm-3.02/bin:$PATH
 ```
 
 ## Build
@@ -59,7 +80,7 @@ export PATH=/usr/lib/llvm-10/bin:$PATH
 make
 ```
 
-This runs flex and bison and produces the `alanc` executable. `make clean` removes the generated files and `make distclean` also removes `alanc`.
+This runs flex and bison and produces the `alanc` executable. The Makefile uses g++. To build with clang++ 23 instead, run `make CXX=clang++`. `make clean` removes the generated files and `make distclean` also removes `alanc`.
 
 On Windows, build and run inside WSL (for example Ubuntu 20.04) from the repository folder, such as `/mnt/d/Git/alan-compiler`. There is no native Windows build.
 
@@ -85,7 +106,7 @@ The script creates a folder named after the source file (for `Examples/HelloWorl
 ```
 ./alanc Examples/HelloWorld.alan > a.ll
 llc a.ll -o a.s
-clang a.s alan_lib_v2/lib.a -Wl,-z,noseparate-code -o a.out
+clang a.s alan_lib_v2/lib.a -no-pie -Wl,-z,noseparate-code -o a.out
 ```
 
 `./do.sh FILE.alan` does exactly these three steps.
@@ -121,10 +142,12 @@ Sorted array: 6, 6, 7, 8, 9, 35, 36, 38, 49, 49, 51, 67, 78, 78, 79, 80
 ## Notes and known limitations
 
 - The runtime library code lives in a NASM section called `.code`, which is not marked executable. Current linkers put such sections in a non-executable segment, so programs crashed at the first library call. The `alan` and `do.sh` scripts now link with `-Wl,-z,noseparate-code` to keep the old layout. Add this flag too if you link by hand.
+- The runtime library uses absolute addresses, so it cannot be linked into a position independent executable. Current clang builds PIE by default, so the scripts also pass `-no-pie`.
+- NASM 3.02 warns "implicit DEFAULT ABS is deprecated" for some runtime files. The warning is harmless. The rebuilt `lib.a` has exactly the same machine code as the committed one.
 - The runtime input functions read from standard input with raw system calls. When the input comes from a pipe or a file, one read can take several lines at once and the next read call misses them. Type the input interactively, or send it one line at a time.
 - `Examples/papariatest.alan` has statements after a `return`. Without `-O` the generated IR is rejected by `llc`. With `-O` it compiles and runs.
 - `Examples/test2` is a test file for semantic errors. The compiler rejects it with an error message.
-- All example programs were compiled and run. Their results were not checked against the original assignment answers.
+- All example programs were compiled and run with LLVM 23, with and without `-O`. Given the same input, their output matched the LLVM 10 build exactly. The results were not checked against the original assignment answers.
 - The shell scripts must have Unix (LF) line endings. `.gitattributes` makes sure of this on Windows checkouts.
 
 ## Author
