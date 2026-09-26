@@ -15,7 +15,8 @@ def main():
     shutil.copytree(ROOT / "dist" / a.platform, stage)
     shutil.copytree(a.zig, stage / "zig")
     shutil.copy(ROOT / "bundle-README.txt", stage / "README.txt")
-    (stage / "VERSION").write_text(a.version + "\n")
+    # bytes, so the line ends in LF on Windows too (Python 3.8 has no newline= here)
+    (stage / "VERSION").write_bytes((a.version + "\n").encode())
     name = f"alan-{a.version}-{a.platform}"
     out = ROOT / "out"
     if a.platform.startswith("windows-"):
