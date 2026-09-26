@@ -1,0 +1,29 @@
+#include <stdio.h>
+#include "../alanrt.h"
+
+int main(void) {
+    alan_writeInteger(42); alan_writeChar('\n');
+    alan_writeInteger(-7); alan_writeChar('\n');
+    alan_writeInteger(70000); alan_writeChar('\n');      /* int16 wrap: 4464 */
+    alan_writeByte(200); alan_writeChar('\n');
+    alan_writeString("hi\n");
+    int32_t a = alan_readInteger();                       /* "12" */
+    alan_writeInteger(a); alan_writeChar('\n');
+    int32_t b = alan_readInteger();                       /* "-5" -> 65531 */
+    alan_writeInteger(b); alan_writeChar('\n');
+    printf("%d\n", b);
+    uint8_t c = alan_readChar();                          /* skips newline, 'x' */
+    alan_writeChar(c); alan_writeChar('\n');
+    char buf[8];
+    alan_readString(8, buf);                              /* rest of line after x: "yz" */
+    alan_writeString(buf); alan_writeChar('\n');
+    alan_readString(8, buf);                              /* "abcdefghij" truncated to 7 */
+    alan_writeString(buf); alan_writeChar('\n');
+    alan_writeInteger(alan_strlen("abc")); alan_writeChar('\n');
+    alan_writeInteger(alan_strcmp("a", "b")); alan_writeChar('\n');
+    char d[16]; alan_strcpy(d, "ab"); alan_strcat(d, "cd"); alan_writeString(d);
+    alan_writeChar('\n');
+    alan_writeInteger(alan_extend(255)); alan_writeChar('\n');
+    alan_writeInteger(alan_shrink(300)); alan_writeChar('\n');
+    return 0;
+}

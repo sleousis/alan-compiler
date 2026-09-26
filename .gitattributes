@@ -6,3 +6,5 @@ Makefile text eol=lf
 # Test inputs and expected output are byte-exact program data
 tests/inputs/*.txt -text
 tests/expected/*.txt -text
+runtime/test/rt_test_input.txt -text
+runtime/test/rt_test_expected.txt -text
