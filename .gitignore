@@ -22,3 +22,6 @@ alan_lib_v2/*/*.a
 # CMake build and packaged toolchains
 /build/
 /dist/
+
+# zig cache kept by CI
+/.zig-global-cache/

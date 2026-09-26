@@ -10,7 +10,6 @@ permissions:
   contents: read
 
 env:
-  ZIG_VERSION: "0.16.0"
   BISON_VERSION: "3.8.2"
   CMAKE_VERSION: "4.4.3"
 
@@ -50,6 +49,10 @@ jobs:
       image: ${{ matrix.container || '' }}
     env:
       DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        # bash runs with pipefail, so a failed download fails its step
+        shell: bash
     steps:
       - name: Install Linux build tools
         if: runner.os == 'Linux'
@@ -59,7 +62,7 @@ jobs:
             libzstd-dev zlib1g-dev libxml2-dev
           # The LLVM release libraries need a newer libstdc++ than Ubuntu 20.04 has.
           # alanc links it statically, so GCC 14 comes from the toolchain PPA.
-          curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x60C317803A41BA51845E371A1E9377A2BA9EF27F" \
+          curl -fsSL --retry 5 "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x60C317803A41BA51845E371A1E9377A2BA9EF27F" \
             | gpg --dearmor > /etc/apt/trusted.gpg.d/ubuntu-toolchain-r.gpg
           echo "deb http://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu focal main" \
             > /etc/apt/sources.list.d/ubuntu-toolchain-r.list
@@ -67,15 +70,29 @@ jobs:
           apt-get install -y gcc-14 g++-14
           echo "CC=gcc-14" >> "$GITHUB_ENV"
           echo "CXX=g++-14" >> "$GITHUB_ENV"
-          curl -fsSL "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION-linux-${{ matrix.cmake }}.tar.gz" \
+          curl -fsSL --retry 5 "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION-linux-${{ matrix.cmake }}.tar.gz" \
             | tar -xz -C /opt
           echo "/opt/cmake-$CMAKE_VERSION-linux-${{ matrix.cmake }}/bin" >> "$GITHUB_PATH"
           cd /tmp
-          curl -fsSL "https://ftp.gnu.org/gnu/bison/bison-$BISON_VERSION.tar.xz" | tar -xJ
+          curl -fsSL --retry 5 "https://ftp.gnu.org/gnu/bison/bison-$BISON_VERSION.tar.xz" | tar -xJ
           (cd "bison-$BISON_VERSION" && ./configure --prefix=/opt/bison && make -j"$(nproc)" && make install)
           echo "/opt/bison/bin" >> "$GITHUB_PATH"
 
       - uses: actions/checkout@v7
+
+      - name: Read tool versions
+        id: versions
+        # llvm=23.1.2, zig=0.16.0 and so on
+        run: sed -n 's/^\([A-Z]*\)_VERSION=\(.*\)$/\1=\2/p' tools/versions.env | tr 'A-Z' 'a-z' >> "$GITHUB_OUTPUT"
+
+      # zig builds libc for a target on its first link, which takes minutes
+      # (most on Windows ARM64, where zig runs under emulation), so keep its
+      # global cache between runs.
+      - name: Cache zig's libc builds
+        uses: actions/cache@v6
+        with:
+          path: .zig-global-cache
+          key: zig-${{ matrix.platform }}-${{ steps.versions.outputs.zig }}
 
       - uses: actions/setup-python@v7
         if: runner.os != 'Linux'
@@ -85,9 +102,10 @@ jobs:
       - name: Install zig (Unix)
         if: runner.os != 'Windows'
         run: |
-          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-${{ matrix.zig }}-$ZIG_VERSION.tar.xz" \
+          curl -fsSL --retry 5 "https://ziglang.org/download/${{ steps.versions.outputs.zig }}/zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}.tar.xz" \
             | tar -xJ -C "$RUNNER_TEMP"
-          echo "ALAN_ZIG=$RUNNER_TEMP/zig-${{ matrix.zig }}-$ZIG_VERSION/zig" >> "$GITHUB_ENV"
+          echo "ALAN_ZIG=$RUNNER_TEMP/zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}/zig" >> "$GITHUB_ENV"
+          echo "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-global-cache" >> "$GITHUB_ENV"
 
       - name: Install zig (Windows)
         if: runner.os == 'Windows'
@@ -95,21 +113,24 @@ jobs:
         run: |
           $ProgressPreference = 'SilentlyContinue'
           $zip = Join-Path $env:RUNNER_TEMP 'zig.zip'
-          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/zig-${{ matrix.zig }}-$env:ZIG_VERSION.zip" -OutFile $zip
+          Invoke-WebRequest -Uri "https://ziglang.org/download/${{ steps.versions.outputs.zig }}/zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}.zip" -OutFile $zip
           Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
-          "ALAN_ZIG=$env:RUNNER_TEMP\zig-${{ matrix.zig }}-$env:ZIG_VERSION\zig.exe" >> $env:GITHUB_ENV
+          "ALAN_ZIG=$env:RUNNER_TEMP\zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}\zig.exe" >> $env:GITHUB_ENV
+          "ZIG_GLOBAL_CACHE_DIR=$env:GITHUB_WORKSPACE\.zig-global-cache" >> $env:GITHUB_ENV
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
         run: sh tools/build-linux.sh
 
+      # Building LLVM takes about an hour. Bump the -1 in the key when
+      # build_llvm_from_source in tools/build-macos.sh changes.
       - name: Restore LLVM built from source
         id: llvm-cache
         if: matrix.platform == 'macos-x64'
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/llvm-*-x86_64-macos
-          key: llvm-src-macos-x64-${{ hashFiles('tools/versions.env') }}
+          key: llvm-src-macos-x64-${{ steps.versions.outputs.llvm }}-1
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
@@ -128,7 +149,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/llvm-*-x86_64-macos
-          key: llvm-src-macos-x64-${{ hashFiles('tools/versions.env') }}
+          key: llvm-src-macos-x64-${{ steps.versions.outputs.llvm }}-1
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
