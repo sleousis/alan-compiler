@@ -1282,7 +1282,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 	case RET: {
 		//printf("%s\n",kinds[t->k]);
 		if (f->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("case RET error!");}
-		Type_T functionType = (Type_T) new(Type_T);
+		Type_T functionType = new Type_tag;
 		functionType = f->u.eFunction.resultType;
 		Type_T tempType = ast_sem(t->left,f);
 		if (tempType->isArray != 0) {
@@ -1342,7 +1342,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 	}
 	case ARREXPR: {
 		//printf("%s\n",kinds[t->k]);
-		Type_T retType = (Type_T) new(Type_T);
+		Type_T retType = new Type_tag;
 		Type_T tempType = ast_sem(t->left,f);
 		retType->isArray = tempType->isArray;
 		retType->kind = tempType->kind;
@@ -1874,7 +1874,7 @@ SymbolEntry* lookupLibrary(char * name){
 }
 
 Type_T createChar(){
-	Type_T theType = (Type_T) new(Type_T);
+	Type_T theType = new Type_tag;
 	theType->kind = Type_tag::TYPE_CHAR;
 	theType->isArray = 0;
 	theType->refType = NULL;
@@ -1884,7 +1884,7 @@ Type_T createChar(){
 }
 
 Type_T createCharArr(){
-	Type_T theType = (Type_T) new(Type_T);
+	Type_T theType = new Type_tag;
 	theType->kind = Type_tag::TYPE_CHAR;
 	theType->isArray = 1;
 	theType->refType = NULL;
@@ -1894,7 +1894,7 @@ Type_T createCharArr(){
 }
 
 Type_T createInt(){
-	Type_T theType = (Type_T) new(Type_T);
+	Type_T theType = new Type_tag;
 	theType->kind = Type_tag::TYPE_INTEGER;
 	theType->isArray = 0;
 	theType->refType = NULL;
@@ -1904,7 +1904,7 @@ Type_T createInt(){
 }
 
 Type_T createIntArr(){
-	Type_T theType = (Type_T) new(Type_T);
+	Type_T theType = new Type_tag;
 	theType->kind = Type_tag::TYPE_INTEGER;
 	theType->isArray = 1;
 	theType->refType = NULL;
@@ -1914,7 +1914,7 @@ Type_T createIntArr(){
 }
 
 Type_T createString(char* theString){
-	Type_T theType = (Type_T) new(Type_T);
+	Type_T theType = new Type_tag;
 	theType->kind = Type_tag::TYPE_CHAR;
 	theType->isArray = 1;
 	theType->refType = NULL;
