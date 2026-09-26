@@ -133,6 +133,14 @@ jobs:
         shell: pwsh
         run: ./tools/build-windows.ps1
 
+      # The first link for a target builds zig's libc, which can take longer
+      # than the test scripts allow for one program.
+      - name: Warm up zig (Unix)
+        if: runner.os != 'Windows'
+        env:
+          ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
+        run: dist/${{ matrix.platform }}/bin/alanc run Examples/HelloWorld.alan
+
       - name: Test (Unix)
         if: runner.os != 'Windows'
         env:
@@ -142,20 +150,32 @@ jobs:
           python3 tests/run_errors.py --alanc dist/${{ matrix.platform }}/bin/alanc
 
       - name: Diagnose (temporary)
+        if: matrix.platform == 'windows-arm64'
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $d = $env:RUNNER_TEMP
+          Set-Content -Path "$d\h.c" -Value 'int main(void){return 3;}'
+          & $env:ALAN_ZIG cc -target aarch64-windows-gnu -c "$d\h.c" -o "$d\h.o"; "arm64 zig compile: exit $LASTEXITCODE"
+          & $env:ALAN_ZIG cc -target aarch64-windows-gnu -nostdlib "$d\h.o" -o "$d\h0.exe" "-Wl,-entry:main"; "arm64 zig link nostdlib: exit $LASTEXITCODE"
+          & $env:ALAN_ZIG cc -target aarch64-windows-gnu "$d\h.o" -o "$d\h1.exe"; "arm64 zig link: exit $LASTEXITCODE"
+          & $env:ALAN_ZIG cc -target x86_64-windows-gnu "$d\h.c" -o "$d\h2.exe"; "arm64 zig link for x64: exit $LASTEXITCODE"
+          & $env:ALAN_ZIG build-exe -target aarch64-windows-gnu -lc "$d\h.c" "-femit-bin=$d\h3.exe"; "arm64 zig build-exe: exit $LASTEXITCODE"
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/zig-x86_64-windows-$env:ZIG_VERSION.zip" -OutFile "$d\zx.zip"
+          Expand-Archive -Path "$d\zx.zip" -DestinationPath "$d\zx"
+          $zx = "$d\zx\zig-x86_64-windows-$env:ZIG_VERSION\zig.exe"
+          & $zx cc -target aarch64-windows-gnu "$d\h.c" -o "$d\h4.exe"; "x64 zig link: exit $LASTEXITCODE"
+          if (Test-Path "$d\h4.exe") { & "$d\h4.exe"; "h4 exit $LASTEXITCODE" }
+          & $env:ALAN_ZIG cc -target aarch64-windows-gnu "$d\h.o" -o "$d\h5.exe"; "arm64 zig link after x64 warmed the cache: exit $LASTEXITCODE"
+          exit 0
+
+      - name: Warm up zig (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 15
         env:
           ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
-        run: |
-          $hw = Join-Path $env:RUNNER_TEMP 'hw.exe'
-          $t = Measure-Command { & dist/${{ matrix.platform }}/bin/alanc.exe build Examples/HelloWorld.alan -o $hw 2>&1 | Out-Host }
-          "alanc build: exit $LASTEXITCODE after $([int]$t.TotalSeconds) s"
-          if (Test-Path $hw) { & $hw; "hw exit $LASTEXITCODE" }
-          Set-Content -Path (Join-Path $env:RUNNER_TEMP 'h.c') -Value 'int main(void){return 3;}'
-          & $env:ALAN_ZIG cc -target ${{ matrix.zig == 'x86_64-windows' && 'x86_64' || 'aarch64' }}-windows-gnu (Join-Path $env:RUNNER_TEMP 'h.c') -o (Join-Path $env:RUNNER_TEMP 'h.exe')
-          "zig cc: exit $LASTEXITCODE"
-          exit 0
+        run: dist/${{ matrix.platform }}/bin/alanc.exe run Examples/HelloWorld.alan
 
       - name: Test (Windows)
         if: runner.os == 'Windows'
