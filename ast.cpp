@@ -227,6 +227,12 @@ inline Value* loadValue(Value *p) {
 	return Builder.CreateLoad(PointeeTypes[p], p);
 }
 
+// Local arrays start zeroed, so a string built in one is always terminated
+// and programs behave the same on every platform.
+inline void zeroArray(Value *p, int bytes) {
+	Builder.CreateMemSet(p, Builder.getInt8(0), bytes, MaybeAlign(1));
+}
+
 //string helper functions
 int hexToInt(char c)
 {
@@ -480,6 +486,7 @@ Value * ast_compile (ast t) {
 			}
 			else if (t->left->k == TYPEARR) {
 				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(ArrayType::get(i32,t->left->num),0,t->id), ArrayType::get(i32,t->left->num));
+				zeroArray(currentFunction->NamedValues[t->id], 4 * t->left->num);
 				tmp->varName = t->id; tmp->varType = i32; tmp->isArray = true;
 				currentFunction->funVariables.push_back(tmp);
 			}
@@ -492,6 +499,7 @@ Value * ast_compile (ast t) {
 			}
 			else if (t->left->k == TYPEARR) {
 				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(ArrayType::get(i8,t->left->num),0,t->id), ArrayType::get(i8,t->left->num));
+				zeroArray(currentFunction->NamedValues[t->id], t->left->num);
 				tmp->varName = t->id; tmp->varType = i8; tmp->isArray = true;
 				currentFunction->funVariables.push_back(tmp);
 			}
