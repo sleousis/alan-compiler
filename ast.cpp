@@ -16,6 +16,8 @@
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Scalar.h>
+#include <llvm/Transforms/Utils.h>
+#include <llvm/Transforms/InstCombine/InstCombine.h>
 #if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR >= 4
 #include <llvm/Transforms/Scalar/GVN.h>
 #endif
@@ -104,11 +106,11 @@ ast ast_const (int n, Type_T t, int line) {
 
 ast ast_ch_str_bool (char *c, kind op, Type_T t, int line) {
 	if (op != BOOL) {
-		char* substr = (char*)malloc(strlen(c)-2);
+		char* substr = (char*)calloc(strlen(c)-1, 1);
 		strncpy(substr, c+1, strlen(c)-2);
 		return ast_make(op, substr, 0, NULL, NULL, t, line);
 	}  if (op != BOOL) {
-		char* substr = (char*)malloc(strlen(c)-2);
+		char* substr = (char*)calloc(strlen(c)-1, 1);
 		strncpy(substr, c+1, strlen(c)-2);
 		return ast_make(op, substr, 0, NULL, NULL, t, line);
 	}
@@ -759,7 +761,7 @@ Value * ast_compile (ast t) {
 		isVariable = false;
 		const char* s = t->id;
 		size_t len = strlen(s);
-		char* sNew = (char*) malloc(sizeof(char)*len);
+		char* sNew = (char*) malloc(sizeof(char)*(len+1));
 		size_t sPos = 0;
 		size_t sNewPos = 0;
 		while (sPos < len) {
@@ -953,8 +955,8 @@ Value * ast_compile (ast t) {
 
 void llvm_compile_and_dump (ast t) {
 	// Initialize the module and the optimization passes.
-	TheModule = make_unique<Module>("alan program", TheContext);
-	TheFPM = make_unique<legacy::FunctionPassManager>(TheModule.get());
+	TheModule = std::make_unique<Module>("alan program", TheContext);
+	TheFPM = std::make_unique<legacy::FunctionPassManager>(TheModule.get());
 	TheFPM->add(createPromoteMemoryToRegisterPass());
 	TheFPM->add(createInstructionCombiningPass());
 	TheFPM->add(createReassociatePass());
@@ -1127,7 +1129,7 @@ void llvm_compile_and_dump (ast t) {
 	tmpFunParameter->parType = i8; tmpFunParameter->parTypePure = i8;
 	funLibrary[13].funParameters.push_back(tmpFunParameter);
 	// Define and start the main function.
-	Constant *c = TheModule->getOrInsertFunction("main", i32);
+	Value *c = TheModule->getOrInsertFunction("main", i32).getCallee();
 	Function* main = cast<Function>(c);
 	BasicBlock *BB = BasicBlock::Create(TheContext, "entry", main);
 	Builder.SetInsertPoint(BB);

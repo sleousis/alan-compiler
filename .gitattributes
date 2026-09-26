@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings or bash fails with "bad interpreter"
+alan text eol=lf
+*.sh text eol=lf
+alan_lib_v2/change_syms text eol=lf
+Makefile text eol=lf
