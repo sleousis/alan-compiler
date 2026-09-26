@@ -26,7 +26,15 @@ FLEX_TARGET(Lexer lexer.l ${CMAKE_BINARY_DIR}/lexer.cpp COMPILE_FLAGS ${FLEX_FLA
 ADD_FLEX_BISON_DEPENDENCY(Lexer Parser)
 add_executable(alanc ast.cpp symbol.cpp error.cpp general.cpp cli.cpp emit.cpp
                ${BISON_Parser_OUTPUTS} ${FLEX_Lexer_OUTPUTS})
-target_include_directories(alanc PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${LLVM_INCLUDE_DIRS})
+target_include_directories(alanc PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+# SYSTEM, so warnings in LLVM's headers are not reported (/external:I on MSVC).
+target_include_directories(alanc SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+# The project's own sources, generated ones included, must build without warnings.
+if(MSVC)
+  target_compile_options(alanc PRIVATE /W3 /WX)
+else()
+  target_compile_options(alanc PRIVATE -Wall -Werror)
+endif()
 separate_arguments(LLVM_DEFS NATIVE_COMMAND ${LLVM_DEFINITIONS})
 target_compile_definitions(alanc PRIVATE ${LLVM_DEFS})
 llvm_map_components_to_libnames(LLVM_LIBS core support target passes

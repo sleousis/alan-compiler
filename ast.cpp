@@ -725,7 +725,7 @@ Value * ast_compile (ast t) {
 				currentFunction->funHiddenParameters.push_back(parTmp);
 			}
 			//Create new Function Definition
-			Constant *c;
+			Constant *c = nullptr;
 			//get function's parameters
 			ast_compile(t->left);
 			//define function type

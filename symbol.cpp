@@ -298,13 +298,13 @@ SymbolEntry * newConstant (char * name, Type_T type, ...)
 
 		switch (type->kind) {
 		case Type_tag::TYPE_INTEGER:
-			sprintf(buffer, "%d", value.vInteger);
+			snprintf(buffer, sizeof buffer, "%d", value.vInteger);
 			break;
 		case Type_tag::TYPE_BOOLEAN:
 			if (value.vBoolean)
-				sprintf(buffer, "true");
+				snprintf(buffer, sizeof buffer, "true");
 			else
-				sprintf(buffer, "false");
+				snprintf(buffer, sizeof buffer, "false");
 			break;
 		case Type_tag::TYPE_CHAR:
 			strcpy(buffer, "'");
@@ -312,7 +312,7 @@ SymbolEntry * newConstant (char * name, Type_T type, ...)
 			strcat(buffer, "'");
 			break;
 		case Type_tag::TYPE_REAL:
-			sprintf(buffer, "%Lg", value.vReal);
+			snprintf(buffer, sizeof buffer, "%Lg", value.vReal);
 			break;
 		case Type_tag::TYPE_ARRAY:
 			strcpy(buffer, "\"");
@@ -484,7 +484,7 @@ SymbolEntry * newTemporary (Type_T type)
 	char buffer[10];
 	SymbolEntry * e;
 
-	sprintf(buffer, "$%d", tempNumber);
+	snprintf(buffer, sizeof buffer, "$%d", tempNumber);
 	e = newEntry(buffer);
 
 	if (e != NULL) {

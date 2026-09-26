@@ -16,6 +16,7 @@ S [!|&<>()\[\]{},:+\-*%/;]
 %x comment
 %option stack
 %option noyywrap
+%option nounput noinput noyy_top_state
 %%
 
 "while"  	{ return T_while; }
@@ -53,6 +54,10 @@ S [!|&<>()\[\]{},:+\-*%/;]
   }
 
   [^"*)"\n]*\n { ++lineno; }
+
+  . { /* the same error as flex -s gives for unmatched input */
+    YY_FATAL_ERROR("flex scanner jammed");
+  }
 }
 
 \"(\\.|[^"\\])*\"		{ yylval.c = strdup(yytext); return T_string; }
