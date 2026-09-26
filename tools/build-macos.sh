@@ -32,6 +32,8 @@ build_llvm_from_source() {
     -DLLVM_ENABLE_CURL=OFF -DLLVM_ENABLE_HTTPLIB=OFF -DLLVM_ENABLE_FFI=OFF
   cmake --build "$TMP/llvm-build" --target install
   rm -rf "$TMP/llvm-build" "$TMP/$src"
+  # Written last, so a cut-off build is never taken for a complete one.
+  touch "$prefix/complete"
 }
 
 brew install bison flex
@@ -56,7 +58,7 @@ case "$(uname -m)" in
     PLATFORM=macos-x64; TARGET=x86_64-macos
     if [ -z "${LLVM_DIR:-}" ]; then
       SOURCE_PREFIX="$TMP/llvm-$LLVM_VERSION-x86_64-macos"
-      if [ -d "$SOURCE_PREFIX/lib/cmake/llvm" ]; then
+      if [ -f "$SOURCE_PREFIX/complete" ]; then
         LLVM_DIR="$SOURCE_PREFIX/lib/cmake/llvm"
       elif brew info "llvm@$LLVM_MAJOR" >/dev/null 2>&1; then
         brew install "llvm@$LLVM_MAJOR"

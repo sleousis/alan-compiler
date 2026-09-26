@@ -36,6 +36,14 @@ fi
 cd "$ROOT"
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$LLVM_DIR"
 cmake --build build --config Release --parallel "$(nproc)"
+# alanc must only depend on glibc.
+echo "NEEDED entries of build/alanc:"
+readelf -d build/alanc | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | tee build/needed.txt
+if grep -v -E '^(libc|libm|libpthread|libdl|librt)\.so\.[0-9]+$|^ld-linux[-a-z0-9_.]*\.so\.[0-9]+$' build/needed.txt; then
+  echo "alanc links libraries outside glibc (listed above)" >&2
+  exit 1
+fi
+
 rm -rf "dist/$PLATFORM"
 mkdir -p "dist/$PLATFORM/bin" "dist/$PLATFORM/lib"
 cp build/alanc "dist/$PLATFORM/bin/alanc"

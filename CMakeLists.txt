@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Link zlib statically, so alanc needs only glibc.
+  set(ZLIB_USE_STATIC_LIBS ON)
+endif()
 # LLVMConfigVersion only accepts major.minor, so check the major version here.
 find_package(LLVM REQUIRED CONFIG)
 if(NOT LLVM_VERSION_MAJOR EQUAL 23)
@@ -46,8 +50,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
   endif()
 endif()
-if(APPLE AND TARGET zstd::libzstd_shared AND zstd_STATIC_LIBRARY)
-  # Link zstd statically so alanc needs no Homebrew libraries.
+if(UNIX AND TARGET zstd::libzstd_shared AND zstd_STATIC_LIBRARY)
+  # Link zstd statically too, so alanc needs no zstd (or Homebrew) library.
   set_target_properties(zstd::libzstd_shared PROPERTIES IMPORTED_LOCATION "${zstd_STATIC_LIBRARY}")
 endif()
 if(MSVC)

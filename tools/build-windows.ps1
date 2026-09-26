@@ -77,7 +77,7 @@ $ZlibVersion = $versions['ZLIB_VERSION']
 $zlib = Install-StaticLibrary "zlib-$ZlibVersion" `
     "https://github.com/madler/zlib/releases/download/v$ZlibVersion/zlib-$ZlibVersion.tar.gz" `
     "zlib-$ZlibVersion" @('-DZLIB_BUILD_SHARED=OFF', '-DZLIB_BUILD_TESTING=OFF')
-$ZlibLib = @(Get-ChildItem (Join-Path $zlib 'lib') -Filter *.lib)[0].FullName
+$ZlibLib = Join-Path $zlib 'lib\zs.lib'
 $ZstdVersion = $versions['ZSTD_VERSION']
 $zstd = Install-StaticLibrary "zstd-$ZstdVersion" `
     "https://github.com/facebook/zstd/releases/download/v$ZstdVersion/zstd-$ZstdVersion.tar.gz" `
