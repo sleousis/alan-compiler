@@ -21,7 +21,7 @@ ast.o: ast.cpp ast.hpp
 %.o: %.cpp
 		$(CXX) $(CXXFLAGS) -c $<
 
-alanc: lexer.o parser.o ast.o error.o general.o symbol.o
+alanc: lexer.o parser.o ast.o error.o general.o symbol.o cli.o
 	$(CXX) $(CXXFLAGS) -o alanc $^ $(LDFLAGS)
 
 clean:

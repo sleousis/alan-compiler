@@ -1,0 +1,6 @@
+main () : proc
+  x : int;
+{
+  x = 1
+  writeInteger(x);
+}

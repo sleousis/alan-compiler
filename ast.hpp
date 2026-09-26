@@ -57,6 +57,7 @@ ast ast_seq (ast l, ast r, int line);
 int ast_run (ast tree);
 Type_T ast_sem(ast tree, SymbolEntry * f);
 Value * ast_compile (ast t);
-void llvm_compile_and_dump (ast t);
+bool llvm_compile (ast t);
+Module *alan_module ();
 
 #endif

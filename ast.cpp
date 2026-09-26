@@ -300,7 +300,9 @@ struct functionTable* findFunction (char* funName) {
 }
 
 //array of Library functions
-struct functionTable *funLibrary = (struct functionTable*) malloc(14*sizeof(struct functionTable));
+// new[]() runs the constructors of the vector and map members. The old
+// malloc left them uninitialised, which is undefined behaviour.
+struct functionTable *funLibrary = new struct functionTable[14]();
 
 functionTable *findFunctionInLibrary (char* funName) {
 	for (int i = 0; i < 14; i++) {
@@ -414,7 +416,9 @@ Value * ast_compile (ast t) {
 	}
 	case SEQ: {
 		ast_compile(t->left);
-		ast_compile(t->right);
+		// Statements after a return are dead. Emitting them would put
+		// instructions after the ret terminator and fail verification.
+		if (!retEnabled) ast_compile(t->right);
 		return nullptr;
 	}
 	case RET: {
@@ -437,7 +441,7 @@ Value * ast_compile (ast t) {
 			tmpFunParameter->parTypePure = i8;
 		}
 		if (t->left->k == TYPEARR) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("In function \033[1;36m%s\033[0m, array must be a reference parameter.", currentFunction->funName);
 		}
 		tmpFunParameter->isRef = false;
@@ -521,7 +525,7 @@ Value * ast_compile (ast t) {
 		if (tmp == NULL) {
 			tmp = findFunctionInLibrary(t->id);
 			if (tmp == NULL) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("Function \033[1;36m%s\033[0m not in scope.", t->id);
 			}
 			isInLibrary = true;
@@ -749,7 +753,7 @@ Value * ast_compile (ast t) {
 	}
 	case ID: {
 		if (currentFunction->NamedValues.find(t->id) == currentFunction->NamedValues.end()) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("Variable \033[1;36m%s\033[0m not in scope.", t->id);
 		}
 		Value *v = currentFunction->NamedValues[t->id];
@@ -976,7 +980,11 @@ Value * ast_compile (ast t) {
 	return nullptr;
 }
 
-void llvm_compile_and_dump (ast t) {
+Module *alan_module () {
+	return TheModule.get();
+}
+
+bool llvm_compile (ast t) {
 	// Initialize the module and the optimization passes.
 	TheModule = std::make_unique<Module>("alan program", TheContext);
 	TheFPM = std::make_unique<FunctionPassManager>();
@@ -1001,7 +1009,7 @@ void llvm_compile_and_dump (ast t) {
 		                  std::vector<Type *>{ i32 }, false);
 	TheWriteInteger =
 		Function::Create(writeInteger_type, Function::ExternalLinkage,
-		                 "writeInteger", TheModule.get());
+		                 "alan_writeInteger", TheModule.get());
 	funLibrary[0].funName = "writeInteger"; funLibrary[0].func = TheWriteInteger;
 	struct parameterStruct *tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = false; tmpFunParameter->isArray = false;
@@ -1013,7 +1021,7 @@ void llvm_compile_and_dump (ast t) {
 		                  std::vector<Type *>{ i8 }, false);
 	TheWriteByte =
 		Function::Create(writeByte_type, Function::ExternalLinkage,
-		                 "writeByte", TheModule.get());
+		                 "alan_writeByte", TheModule.get());
 	funLibrary[1].funName = "writeByte"; funLibrary[1].func = TheWriteByte;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = false; tmpFunParameter->isArray = false;
@@ -1025,7 +1033,7 @@ void llvm_compile_and_dump (ast t) {
 		                  std::vector<Type *>{ i8 }, false);
 	TheWriteChar =
 		Function::Create(writeChar_type, Function::ExternalLinkage,
-		                 "writeChar", TheModule.get());
+		                 "alan_writeChar", TheModule.get());
 	funLibrary[2].funName = "writeChar"; funLibrary[2].func = TheWriteChar;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = false; tmpFunParameter->isArray = false;
@@ -1037,7 +1045,7 @@ void llvm_compile_and_dump (ast t) {
 		                  std::vector<Type *>{ PointerType::get(TheContext, 0) }, false);
 	TheWriteString =
 		Function::Create(writeString_type, Function::ExternalLinkage,
-		                 "writeString", TheModule.get());
+		                 "alan_writeString", TheModule.get());
 	funLibrary[3].funName = "writeString"; funLibrary[3].func = TheWriteString;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = true; tmpFunParameter->isArray = true;
@@ -1048,21 +1056,21 @@ void llvm_compile_and_dump (ast t) {
 		FunctionType::get(i32, false);
 	TheReadInteger =
 		Function::Create(readInteger_type, Function::ExternalLinkage,
-		                 "readInteger", TheModule.get());
+		                 "alan_readInteger", TheModule.get());
 	funLibrary[4].funName = "readInteger"; funLibrary[4].func = TheReadInteger;
 	// declare i8 @readByte()
 	FunctionType *readByte_type =
 		FunctionType::get(i8, false);
 	TheReadByte =
 		Function::Create(readByte_type, Function::ExternalLinkage,
-		                 "readByte", TheModule.get());
+		                 "alan_readByte", TheModule.get());
 	funLibrary[5].funName = "readByte"; funLibrary[5].func = TheReadByte;
 	// declare i8 @readChar()
 	FunctionType *readChar_type =
 		FunctionType::get(i8, false);
 	TheReadChar =
 		Function::Create(readChar_type, Function::ExternalLinkage,
-		                 "readChar", TheModule.get());
+		                 "alan_readChar", TheModule.get());
 	funLibrary[6].funName = "readChar"; funLibrary[6].func = TheReadChar;
 	// declare void @readString(i32, i8*)
 	FunctionType *readString_type =
@@ -1070,7 +1078,7 @@ void llvm_compile_and_dump (ast t) {
 		                  std::vector<Type *>{ i32, PointerType::get(TheContext, 0) }, false);
 	TheReadString =
 		Function::Create(readString_type, Function::ExternalLinkage,
-		                 "readString", TheModule.get());
+		                 "alan_readString", TheModule.get());
 	funLibrary[7].funName = "readString"; funLibrary[7].func = TheReadString;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = false; tmpFunParameter->isArray = false;
@@ -1085,7 +1093,7 @@ void llvm_compile_and_dump (ast t) {
 		FunctionType::get(i32, std::vector<Type *>{ i8 }, false);
 	TheExtend =
 		Function::Create(extend_type, Function::ExternalLinkage,
-		                 "extend", TheModule.get());
+		                 "alan_extend", TheModule.get());
 	funLibrary[8].funName = "extend"; funLibrary[8].func = TheExtend;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = false; tmpFunParameter->isArray = false;
@@ -1096,7 +1104,7 @@ void llvm_compile_and_dump (ast t) {
 		FunctionType::get(i8, std::vector<Type *>{ i32 }, false);
 	TheShrink =
 		Function::Create(shrink_type, Function::ExternalLinkage,
-		                 "shrink", TheModule.get());
+		                 "alan_shrink", TheModule.get());
 	funLibrary[9].funName = "shrink"; funLibrary[9].func = TheShrink;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = false; tmpFunParameter->isArray = false;
@@ -1107,7 +1115,7 @@ void llvm_compile_and_dump (ast t) {
 		FunctionType::get(i32, std::vector<Type *>{ PointerType::get(TheContext, 0) }, false);
 	TheStrlen =
 		Function::Create(strlen_type, Function::ExternalLinkage,
-		                 "strlen", TheModule.get());
+		                 "alan_strlen", TheModule.get());
 	funLibrary[10].funName = "strlen"; funLibrary[10].func = TheStrlen;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = true; tmpFunParameter->isArray = true;
@@ -1118,7 +1126,7 @@ void llvm_compile_and_dump (ast t) {
 		FunctionType::get(i32, std::vector<Type *>{ PointerType::get(TheContext, 0), PointerType::get(TheContext, 0) }, false);
 	TheStrcmp =
 		Function::Create(strcmp_type, Function::ExternalLinkage,
-		                 "strcmp", TheModule.get());
+		                 "alan_strcmp", TheModule.get());
 	funLibrary[11].funName = "strcmp"; funLibrary[11].func = TheStrcmp;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = true; tmpFunParameter->isArray = true;
@@ -1134,7 +1142,7 @@ void llvm_compile_and_dump (ast t) {
 		                  std::vector<Type *>{ PointerType::get(TheContext, 0), PointerType::get(TheContext, 0) }, false);
 	TheStrcpy =
 		Function::Create(strcpy_type, Function::ExternalLinkage,
-		                 "strcpy", TheModule.get());
+		                 "alan_strcpy", TheModule.get());
 	funLibrary[12].funName = "strcpy"; funLibrary[12].func = TheStrcpy;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = true; tmpFunParameter->isArray = true;
@@ -1150,7 +1158,7 @@ void llvm_compile_and_dump (ast t) {
 		                  std::vector<Type *>{ PointerType::get(TheContext, 0), PointerType::get(TheContext, 0) }, false);
 	TheStrcat =
 		Function::Create(strcat_type, Function::ExternalLinkage,
-		                 "strcat", TheModule.get());
+		                 "alan_strcat", TheModule.get());
 	funLibrary[13].funName = "strcat"; funLibrary[13].func = TheStrcat;
 	tmpFunParameter = new struct parameterStruct ();
 	tmpFunParameter->isRef = true; tmpFunParameter->isArray = true;
@@ -1173,23 +1181,24 @@ void llvm_compile_and_dump (ast t) {
 	if (bad) {
 		fprintf(stderr, "The faulty IR is:\n");
 		fprintf(stderr, "------------------------------------------------\n\n");
-		TheModule->print(outs(), nullptr);
-		return;
+		TheModule->print(errs(), nullptr);
+		return false;
 	}
 	TheFPM->run(*main, *TheFAM);
-	// Print out the IR.
-	TheModule->print(outs(), nullptr);
+	return true;
 }
 
 Type_T ast_sem (ast t, SymbolEntry * f) {
 	if (t == NULL) return NULL;
+	// Symbol table errors have no line of their own, so they use this one.
+	linecount = t->line;
 	switch (t->k) {
 	case WHILE: {
 		//printf("%s\n",kinds[t->k]);
 		ast_sem(t->left,f);
 		if (!equalType(t->left->type, typeBoolean))
 		{
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("While loop expects a boolean expression.");
 		}
 		ast_sem(t->right,f);
@@ -1199,7 +1208,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		//printf("%s\n",kinds[t->k]);
 		ast_sem(t->left,f);
 		if (!equalType(t->left->type, typeBoolean))
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("If expects a boolean condition.");}
 		ast_sem(t->right,f);
 		return NULL;
@@ -1216,46 +1225,46 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		if (f!= NULL && f->entryType == ENTRY_PARAMETER) {
 			Type_T checkType = ast_sem(t->left, f);
 			if (checkType->isArray != f->u.eParameter.type->isArray) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).", f->id);
 			}
 			if (!equalType(checkType, f->u.eParameter.type)) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", f->id, types[checkType->kind],types[f->u.eParameter.type->kind]);
 			}
 			if (f->u.eParameter.mode == PASS_BY_VALUE && checkType->isArray == 1) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("Can't pass Array \033[1;36m%s\033[0m as Parameter by value.", f->id);
 			}
 			if (f->u.eParameter.mode == PASS_BY_REFERENCE && t->left->k != ID && t->left->k != ARREXPR && t->left->k != STRING  && t->left->k != FUNCALL && checkType->isArray) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("Only L-values can be passed by reference.");
 			}
 			SymbolEntry *nextParameter = (SymbolEntry*)malloc(sizeof(SymbolEntry));
 			nextParameter = f->u.eParameter.next;
-			if (nextParameter == NULL && t->right != NULL) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", f->id);}
-			if (nextParameter != NULL && t->right == NULL) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", f->id);}
+			if (nextParameter == NULL && t->right != NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", f->id);}
+			if (nextParameter != NULL && t->right == NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", f->id);}
 			if (*retType == NULL) *retType = checkType;
 			if (t->right->k != SEQ) {
 				checkType = ast_sem(t->right, f);
 				if (checkType->isArray != nextParameter->u.eParameter.type->isArray) {
-					fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+					error_prefix(t->line);
 					error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).", nextParameter->id);
 				}
 				if (!equalType(checkType, nextParameter->u.eParameter.type)) {
-					fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+					error_prefix(t->line);
 					error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", nextParameter->id, types[checkType->kind],types[nextParameter->u.eParameter.type->kind]);
 				}
 				if (nextParameter->u.eParameter.mode == PASS_BY_VALUE && checkType->isArray == 1) {
-					fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+					error_prefix(t->line);
 					error("Can't pass Array \033[1;36m%s\033[0m as Parameter by value.", nextParameter->id);
 				}
 				if (nextParameter->u.eParameter.mode == PASS_BY_REFERENCE && t->left->k != ID && t->left->k != ARREXPR && t->left->k != STRING  && t->left->k != FUNCALL && checkType->isArray != 1) {
-					fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+					error_prefix(t->line);
 					error("Only L-values can be passed by reference.");
 				}
 				nextParameter = nextParameter->u.eParameter.next;
-				if (nextParameter != NULL) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", nextParameter->id);}
+				if (nextParameter != NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", nextParameter->id);}
 				if (*retType == NULL) *retType = checkType;
 				return *retType;
 			}
@@ -1272,16 +1281,16 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 	}
 	case RET: {
 		//printf("%s\n",kinds[t->k]);
-		if (f->entryType != ENTRY_FUNCTION) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("case RET error!");}
+		if (f->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("case RET error!");}
 		Type_T functionType = (Type_T) new(Type_T);
 		functionType = f->u.eFunction.resultType;
 		Type_T tempType = ast_sem(t->left,f);
 		if (tempType->isArray != 0) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("Can't return whole array.");
 		}
 		if (!equalType(functionType, tempType)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("Function %s must return %s.", f->id, types[functionType->kind]);
 		}
 		return NULL;
@@ -1304,7 +1313,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 	case TYPEARR: {
 		//printf("%s: %s ARRAY\n",kinds[t->k] ,types[t->type->kind]);
 		t->type->isArray = 1;
-		if (t->num < 0) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error ("Array size must be a positive int.");}
+		if (t->num < 0) { error_prefix(t->line); error ("Array size must be a positive int.");}
 		t->type->size = t->num;
 		return t->type;
 	}
@@ -1322,11 +1331,11 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		Type_T type1 = ast_sem(t->left,f);
 		Type_T type2 = ast_sem(t->right,f);
 		if (type1->isArray != 0 || type2->isArray != 0) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("Can't assign whole arrays or strings by = operator.");
 		}
 		if (!equalType(type1, type2)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("Can't assign different types (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[type1->kind],types[type2->kind]);
 		}
 		return NULL;
@@ -1339,7 +1348,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		retType->kind = tempType->kind;
 		retType->size = tempType->size;
 		if (retType->isArray == 0) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error ("Expected array.");
 		}
 		t->id = t->left->id;
@@ -1347,7 +1356,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		t->type = retType;
 		Type_T tempType2 = ast_sem(t->right,f);
 		if (tempType2->kind != Type_tag::TYPE_INTEGER) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error ("Index of array must be an int.");
 		}
 		return retType;
@@ -1359,36 +1368,36 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		if (theFunction == NULL) {
 			theFunction = lookupLibrary(t->id);
 			if (theFunction == NULL) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("Function \033[1;36m%s\033[0m is not declared in this Scope.", t->id);
 			}
 		}
-		if (theFunction->entryType != ENTRY_FUNCTION) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("\033[1;36m%s\033[0m is not a function.", t->id);}
+		if (theFunction->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("\033[1;36m%s\033[0m is not a function.", t->id);}
 		t->type = theFunction->u.eFunction.resultType;
 		SymbolEntry *firstParameter = (SymbolEntry*)malloc(sizeof(SymbolEntry));
 		firstParameter = theFunction->u.eFunction.firstArgument;
 		SymbolEntry *nextParameter = (SymbolEntry*)malloc(sizeof(SymbolEntry));
 		if (firstParameter != NULL) nextParameter = firstParameter->u.eParameter.next;
-		if (firstParameter == NULL && t->left != NULL) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("Function \033[1;36m%s\033[0m cannot have any Parameters.", t->id);}
-		if (firstParameter != NULL && t->left == NULL) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("Function \033[1;36m%s\033[0m must have Parameters.", t->id);}
-		if (firstParameter != NULL && nextParameter != NULL && t->left->k != SEQ) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", t->id);}
-		if (firstParameter != NULL && nextParameter == NULL && t->left->k == SEQ) { fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", t->id);}
+		if (firstParameter == NULL && t->left != NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m cannot have any Parameters.", t->id);}
+		if (firstParameter != NULL && t->left == NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m must have Parameters.", t->id);}
+		if (firstParameter != NULL && nextParameter != NULL && t->left->k != SEQ) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", t->id);}
+		if (firstParameter != NULL && nextParameter == NULL && t->left->k == SEQ) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", t->id);}
 		if (firstParameter != NULL && firstParameter->u.eParameter.next == NULL) {
 			Type_T checkType = ast_sem(t->left, f);
 			if (checkType->isArray != firstParameter->u.eParameter.type->isArray) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).");
 			}
 			if (!equalType(checkType, firstParameter->u.eParameter.type)) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", firstParameter->id, types[checkType->kind], types[firstParameter->u.eParameter.type->kind]);
 			}
 			if (firstParameter->u.eParameter.mode == PASS_BY_VALUE && checkType->isArray == 1) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("Can't pass L-value \033[1;36m%s\033[0m Parameter by value.", firstParameter->id);
 			}
 			if (firstParameter->u.eParameter.mode == PASS_BY_REFERENCE && t->left->k != ID && t->left->k != ARREXPR && t->left->k != STRING && t->left->k != FUNCALL) {
-				fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+				error_prefix(t->line);
 				error("Only L-values can pass by reference.");
 			}
 		}
@@ -1415,7 +1424,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		SymbolEntry *entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
 		entry = lookupEntry(t->id,LOOKUP_CURRENT_SCOPE,false);
 		if (entry == NULL) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("Identifier not found.");
 			return NULL;
 		}
@@ -1464,10 +1473,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in + operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in + operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		else t->type = t->left->type;
@@ -1478,10 +1487,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in - operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in - operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		else t->type = t->left->type;
@@ -1492,10 +1501,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in * operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in * operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		else t->type = t->left->type;
@@ -1506,10 +1515,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in / operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in / operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		else t->type = t->left->type;
@@ -1520,10 +1529,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in % operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in % operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		else t->type = t->left->type;
@@ -1534,10 +1543,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in == operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in == operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		return t->type;
@@ -1547,10 +1556,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in != operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in != operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		return t->type;
@@ -1560,10 +1569,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in <= operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in <= operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		return t->type;
@@ -1573,10 +1582,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in >= operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in >= operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		return t->type;
@@ -1586,10 +1595,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in > operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in > operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		return t->type;
@@ -1599,10 +1608,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in < operator (can't use array in expression).");}
 		if (!equalType(t->left->type, t->right->type)) {
-			fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+			error_prefix(t->line);
 			error("type mismatch in < operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
 		}
 		return t->type;
@@ -1612,7 +1621,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
 		if (!equalType(t->right->type, typeBoolean))
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in ! operator.");}
 		return t->type;
 	}
@@ -1622,7 +1631,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->right,f);
 		if (!equalType(t->left->type, typeBoolean) ||
 		    !equalType(t->right->type, typeBoolean))
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in AND operator.");}
 		return t->type;
 	}
@@ -1632,7 +1641,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->right,f);
 		if (!equalType(t->left->type, typeBoolean) ||
 		    !equalType(t->right->type, typeBoolean))
-		{ fprintf(stderr,"\033[1m%s:%d:\033[0m ", filename, t->line);
+		{ error_prefix(t->line);
 		  error("type mismatch in OR operator.");}
 		return t->type;
 	}

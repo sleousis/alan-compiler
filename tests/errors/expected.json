@@ -1,0 +1,5 @@
+[
+  {"file": "tests/errors/missing_semicolon.alan", "line": 5, "contains": "error:"},
+  {"file": "tests/errors/undeclared.alan", "line": 3, "contains": "error:"},
+  {"file": "Examples/test2", "line": null, "contains": "error:"}
+]

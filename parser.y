@@ -1,9 +1,12 @@
 %{
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <libgen.h>
 #include "ast.hpp"
 #include "symbol.hpp"
+#include "error.hpp"
+#include "cli.hpp"
 
 const char* filename;
 extern int yylex();
@@ -198,30 +201,37 @@ cond:
 %%
 
 void yyerror (const char msg[]) {
-  fprintf(stderr, "Alan error: %s\n", msg);
-  fprintf(stderr, "Aborting, I've had enough with line %d...\n",
-          lineno);
+  bool tty = stderr_is_tty();
+  fprintf(stderr, "%s:%d: %serror:%s %s\n", filename, lineno,
+          tty ? "\033[1;31m" : "", tty ? "\033[0m" : "", msg);
   exit(1);
 }
 
-int main(int argc, char *argv[]) {
-  opt = false;
-  if (argc == 3 && strcmp(argv[2], "-O") == 0){
-    opt = true;
+/* Parse the file at path and check it. When codegen is true, also generate
+   the LLVM module that alan_module() returns. Returns 0 on success. Errors
+   in the program are reported on stderr and end the process with exit
+   code 1. */
+int compile_to_module(const char *path, bool optimize, bool codegen) {
+  opt = optimize;
+  yyin = fopen(path, "r");
+  if (yyin == NULL) {
+    fprintf(stderr, "alanc: %serror:%s cannot open %s\n",
+            stderr_is_tty() ? "\033[1;31m" : "",
+            stderr_is_tty() ? "\033[0m" : "", path);
+    return 1;
   }
-  else{
-    opt = false;
-  }
-  yyin = fopen(argv[1], "r");
-  filename = basename(argv[1]);
+  /* basename() may modify its argument, so give it a copy. */
+  filename = basename(strdup(path));
   if (yyparse()) return 1;
   fclose(yyin);
-  //ast_tree_print(tree,0);
-  //printf("Compilation was successful.\n");
   initSymbolTable(997);
   createLibrary();
   ast_sem(tree,NULL);
   destroySymbolTable();
-  llvm_compile_and_dump(tree);
+  if (codegen && !llvm_compile(tree)) return 1;
   return 0;
+}
+
+int main(int argc, char *argv[]) {
+  return alan_cli_main(argc, argv);
 }

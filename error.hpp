@@ -32,5 +32,10 @@ void fatal    (const char * fmt, ...);
 void error    (const char * fmt, ...);
 void warning  (const char * fmt, ...);
 
+/* True when stderr is a terminal (colour output is allowed). */
+bool stderr_is_tty (void);
+/* Print "<file>:<line>: " before an error() message. */
+void error_prefix (int line);
+
 
 #endif
