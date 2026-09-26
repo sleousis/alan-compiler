@@ -93,7 +93,7 @@ llc "$FILENAME/$FILENAME.imm" -o "$FILENAME/$FILENAME.asm" || exit 1
 if [[ $NEW_NAME != 1 ]]; then
   NAME=$FILENAME
 fi
-clang "$FILENAME/$FILENAME.asm" "alan_lib_v2/lib.a" -Wl,-z,noseparate-code -o "$FILENAME/$NAME" || exit 1
+clang "$FILENAME/$FILENAME.asm" "alan_lib_v2/lib.a" -no-pie -Wl,-z,noseparate-code -o "$FILENAME/$NAME" || exit 1
 echo "Compilation complete!"
 if [[ $IR != 1 ]]; then
   rm "$FILENAME/$FILENAME.imm"

@@ -1,7 +1,7 @@
 .PHONY: clean distclean default
 
 CXX=g++
-CXXFLAGS=-Wall -g -std=c++11 `llvm-config --cxxflags`
+CXXFLAGS=-Wall -g -std=c++17 `llvm-config --cxxflags`
 LDFLAGS=`llvm-config --ldflags --system-libs --libs all`
 
 default: alanc

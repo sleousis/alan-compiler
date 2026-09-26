@@ -2,15 +2,8 @@
 #define __AST_H__
 #include "symbol.hpp"
 #include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
-#include <llvm/IR/Verifier.h>
-#include <llvm/Support/raw_ostream.h>
-#include <llvm/Transforms/Scalar.h>
-#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR >= 4
-#include <llvm/Transforms/Scalar/GVN.h>
-#endif
 using namespace llvm;
 typedef enum {
 	WHILE=0, IF=1, IFELSE=2, SEQ=3, RET=4, PAR=5, PARREF=6, TYPE=7, TYPEARR=8, PROC=9, VAR=10, ASS=11, ARREXPR=12, FUNCALL=13, FUNCDEF=14,

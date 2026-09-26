@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <vector>
+#include <map>
 #include <ctype.h>
 #include "general.hpp"
 #include "ast.hpp"
@@ -10,17 +11,17 @@
 #include "error.hpp"
 
 #include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/PassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/raw_ostream.h>
-#include <llvm/Transforms/Scalar.h>
-#include <llvm/Transforms/Utils.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
-#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR >= 4
 #include <llvm/Transforms/Scalar/GVN.h>
-#endif
+#include <llvm/Transforms/Scalar/Reassociate.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
 
 using namespace llvm;
 
@@ -176,7 +177,11 @@ ast ast_seq (ast l, ast r, int line) {
 static LLVMContext TheContext;
 static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
-static std::unique_ptr<legacy::FunctionPassManager> TheFPM;
+static std::unique_ptr<FunctionPassManager> TheFPM;
+static std::unique_ptr<LoopAnalysisManager> TheLAM;
+static std::unique_ptr<FunctionAnalysisManager> TheFAM;
+static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
+static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static std::map<int, std::map<std::string, Value *> > NamedValues;
 
 // Global LLVM variables related to the generated code.
@@ -203,13 +208,23 @@ static Type * i64 = IntegerType::get(TheContext, 64);
 
 // Useful LLVM helper functions.
 inline ConstantInt* c1(int n) {
-	return ConstantInt::get(TheContext, APInt(1, n, true));
+	return ConstantInt::get(TheContext, APInt(1, n));
 }
 inline ConstantInt* c8(char c) {
 	return ConstantInt::get(TheContext, APInt(8, c, true));
 }
 inline ConstantInt* c32(int n) {
 	return ConstantInt::get(TheContext, APInt(32, n, true));
+}
+
+// LLVM pointers are opaque, so remember the type each pointer points to.
+static std::map<Value *, Type *> PointeeTypes;
+inline Value* trackPtr(Value *p, Type *t) {
+	PointeeTypes[p] = t;
+	return p;
+}
+inline Value* loadValue(Value *p) {
+	return Builder.CreateLoad(PointeeTypes[p], p);
 }
 
 //string helper functions
@@ -298,7 +313,7 @@ functionTable *findFunctionInLibrary (char* funName) {
 Constant *createFunction(char* name, Type* retType) {
 	std::vector<Type *> Args;
 	for (size_t i = 0; i < currentFunction->funHiddenParameters.size(); i++) {
-		Args.push_back(llvm::PointerType::getUnqual(currentFunction->funHiddenParameters[i]->parType));
+		Args.push_back(llvm::PointerType::getUnqual(TheContext));
 	}
 	for (size_t i = 0; i < currentFunction->funParameters.size(); i++) {
 		Args.push_back(currentFunction->funParameters[i]->parType);
@@ -405,7 +420,7 @@ Value * ast_compile (ast t) {
 	case RET: {
 		Value *l_value;
 		Value *l = ast_compile(t->left);
-		if (isVariable) l_value = Builder.CreateLoad(l);
+		if (isVariable) l_value = loadValue(l);
 		else l_value = l;
 		retEnabled = true;
 		return Builder.CreateRet(l_value);
@@ -435,11 +450,11 @@ Value * ast_compile (ast t) {
 		tmpFunParameter->parName = t->id;
 		//NEEDS FIX
 		if (t->left->type->kind == Type_tag::TYPE_INTEGER) {
-			tmpFunParameter->parType = llvm::PointerType::getUnqual(i32);
+			tmpFunParameter->parType = llvm::PointerType::getUnqual(TheContext);
 			tmpFunParameter->parTypePure = i32;
 		}
 		else if (t->left->type->kind == Type_tag::TYPE_CHAR) {
-			tmpFunParameter->parType = llvm::PointerType::getUnqual(i8);
+			tmpFunParameter->parType = llvm::PointerType::getUnqual(TheContext);
 			tmpFunParameter->parTypePure = i8;
 		}
 		if (t->left->k == TYPE) tmpFunParameter->isArray = false;
@@ -455,24 +470,24 @@ Value * ast_compile (ast t) {
 		struct variableStruct *tmp = new struct variableStruct ();
 		if (t->left->type->kind == Type_tag::TYPE_INTEGER) {
 			if (t->left->k == TYPE) {
-				currentFunction->NamedValues[t->id] = Builder.CreateAlloca(i32,0,t->id);
+				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(i32,0,t->id), i32);
 				tmp->varName = t->id; tmp->varType = i32; tmp->isArray = false;
 				currentFunction->funVariables.push_back(tmp);
 			}
 			else if (t->left->k == TYPEARR) {
-				currentFunction->NamedValues[t->id] = Builder.CreateAlloca(ArrayType::get(i32,t->left->num),0,t->id);
+				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(ArrayType::get(i32,t->left->num),0,t->id), ArrayType::get(i32,t->left->num));
 				tmp->varName = t->id; tmp->varType = i32; tmp->isArray = true;
 				currentFunction->funVariables.push_back(tmp);
 			}
 		}
 		else if (t->left->type->kind == Type_tag::TYPE_CHAR) {
 			if (t->left->k == TYPE) {
-				currentFunction->NamedValues[t->id] = Builder.CreateAlloca(i8,0,t->id);
+				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(i8,0,t->id), i8);
 				tmp->varName = t->id; tmp->varType = i8; tmp->isArray = false;
 				currentFunction->funVariables.push_back(tmp);
 			}
 			else if (t->left->k == TYPEARR) {
-				currentFunction->NamedValues[t->id] = Builder.CreateAlloca(ArrayType::get(i8,t->left->num),0,t->id);
+				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(ArrayType::get(i8,t->left->num),0,t->id), ArrayType::get(i8,t->left->num));
 				tmp->varName = t->id; tmp->varType = i8; tmp->isArray = true;
 				currentFunction->funVariables.push_back(tmp);
 			}
@@ -482,7 +497,7 @@ Value * ast_compile (ast t) {
 	case ASS: {
 		Value *r_value;
 		Value *r = ast_compile(t->right);
-		if (isVariable) r_value = Builder.CreateLoad(r);
+		if (isVariable) r_value = loadValue(r);
 		else r_value = r;
 		Value *l = ast_compile(t->left);
 		Builder.CreateStore(r_value,l);
@@ -491,10 +506,12 @@ Value * ast_compile (ast t) {
 	case ARREXPR: {
 		Value *r_value;
 		Value *r = ast_compile(t->right);
-		if (isVariable) r_value = Builder.CreateLoad(r);
+		if (isVariable) r_value = loadValue(r);
 		else r_value = r;
 		Value *l = ast_compile(t->left);
-		Value *tmpArr = Builder.CreateGEP(l, std::vector<Value *>{ c32(0), r_value }, "tmpArr");
+		Type *arrType = PointeeTypes[l];
+		Value *tmpArr = trackPtr(Builder.CreateGEP(arrType, l, std::vector<Value *>{ c32(0), r_value }, "tmpArr"),
+		                         arrType->getArrayElementType());
 		isVariable = true;
 		return tmpArr;
 	}
@@ -516,7 +533,7 @@ Value * ast_compile (ast t) {
 			for (size_t i = 0; i < tmp->funHiddenParameters.size(); i++) {
 				if (tmp->funHiddenParameters[i]->isArray) {
 					Instruction *result = new BitCastInst(currentFunction->NamedValues[tmp->funHiddenParameters[i]->parName],
-					                                      llvm::PointerType::getUnqual(tmp->funHiddenParameters[i]->parType),
+					                                      llvm::PointerType::getUnqual(TheContext),
 					                                      "castedArr", globalBB);
 					Args.push_back(result);
 				}
@@ -530,12 +547,12 @@ Value * ast_compile (ast t) {
 			if (t->left->k != SEQ) {
 				l = ast_compile(t->left);
 				if (!tmp->funParameters[0]->isRef) {
-					if (isVariable) v = Builder.CreateLoad(l);
+					if (isVariable) v = loadValue(l);
 					else v = l;
 				}
 				else {
 					if (tmp->funParameters[0]->isArray) {
-						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(tmp->funParameters[0]->parTypePure),
+						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(TheContext),
 						                                      "castedArr", globalBB);
 						v = result;
 					}
@@ -550,12 +567,12 @@ Value * ast_compile (ast t) {
 				while (iter->right->k == SEQ) {
 					l = ast_compile(iter->left);
 					if (!tmp->funParameters[i]->isRef) {
-						if (isVariable) v = Builder.CreateLoad(l);
+						if (isVariable) v = loadValue(l);
 						else v = l;
 					}
 					else {
 						if (tmp->funParameters[i]->isArray) {
-							Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(tmp->funParameters[i]->parTypePure),
+							Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(TheContext),
 							                                      "castedArr", globalBB);
 							v = result;
 						}
@@ -567,12 +584,12 @@ Value * ast_compile (ast t) {
 				}
 				l = ast_compile(iter->left);
 				if (!tmp->funParameters[i]->isRef) {
-					if (isVariable) v = Builder.CreateLoad(l);
+					if (isVariable) v = loadValue(l);
 					else v = l;
 				}
 				else {
 					if (tmp->funParameters[i]->isArray) {
-						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(tmp->funParameters[i]->parTypePure),
+						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(TheContext),
 						                                      "castedArr", globalBB);
 						v = result;
 					}
@@ -582,12 +599,12 @@ Value * ast_compile (ast t) {
 				i++;
 				l = ast_compile(iter->right);
 				if (!tmp->funParameters[i]->isRef) {
-					if (isVariable) v = Builder.CreateLoad(l);
+					if (isVariable) v = loadValue(l);
 					else v = l;
 				}
 				else {
 					if (tmp->funParameters[i]->isArray) {
-						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(tmp->funParameters[i]->parTypePure),
+						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(TheContext),
 						                                      "castedArr", globalBB);
 						v = result;
 					}
@@ -616,11 +633,13 @@ Value * ast_compile (ast t) {
 				Value *tmpArg = argss++;
 				if (currentFunction->funHiddenParameters[i]->isArray) {
 					Instruction *result = new BitCastInst(tmpArg,
-					                                      llvm::PointerType::getUnqual(ArrayType::get(currentFunction->funHiddenParameters[i]->parType,1)),
+					                                      llvm::PointerType::getUnqual(TheContext),
 					                                      "backCastedArr", globalBB);
-					currentFunction->NamedValues[currentFunction->funHiddenParameters[i]->parName] = result;
+					currentFunction->NamedValues[currentFunction->funHiddenParameters[i]->parName] =
+						trackPtr(result, ArrayType::get(currentFunction->funHiddenParameters[i]->parType,1));
 				}
-				else currentFunction->NamedValues[currentFunction->funHiddenParameters[i]->parName] = tmpArg;
+				else currentFunction->NamedValues[currentFunction->funHiddenParameters[i]->parName] =
+					trackPtr(tmpArg, currentFunction->funHiddenParameters[i]->parType);
 				struct variableStruct *vartmp = new struct variableStruct ();
 				vartmp->varName = currentFunction->funHiddenParameters[i]->parName;
 				vartmp->varType = currentFunction->funHiddenParameters[i]->parType;
@@ -631,7 +650,8 @@ Value * ast_compile (ast t) {
 				Value *tmpArg = argss++;
 				if (!currentFunction->funParameters[i]->isRef) {
 					currentFunction->NamedValues[currentFunction->funParameters[i]->parName] =
-						Builder.CreateAlloca(currentFunction->funParameters[i]->parType,0,currentFunction->funParameters[i]->parName);
+						trackPtr(Builder.CreateAlloca(currentFunction->funParameters[i]->parType,0,currentFunction->funParameters[i]->parName),
+						         currentFunction->funParameters[i]->parType);
 					struct variableStruct *vartmp = new struct variableStruct ();
 					vartmp->varName = currentFunction->funParameters[i]->parName;
 					vartmp->varType = currentFunction->funParameters[i]->parType;
@@ -642,11 +662,13 @@ Value * ast_compile (ast t) {
 				else {
 					if (currentFunction->funParameters[i]->isArray) {
 						Instruction *result = new BitCastInst(tmpArg,
-						                                      llvm::PointerType::getUnqual(ArrayType::get(currentFunction->funParameters[i]->parTypePure,1)),
+						                                      llvm::PointerType::getUnqual(TheContext),
 						                                      "backCastedArr", globalBB);
-						currentFunction->NamedValues[currentFunction->funParameters[i]->parName] = result;
+						currentFunction->NamedValues[currentFunction->funParameters[i]->parName] =
+							trackPtr(result, ArrayType::get(currentFunction->funParameters[i]->parTypePure,1));
 					}
-					else currentFunction->NamedValues[currentFunction->funParameters[i]->parName] = tmpArg;
+					else currentFunction->NamedValues[currentFunction->funParameters[i]->parName] =
+						trackPtr(tmpArg, currentFunction->funParameters[i]->parTypePure);
 					struct variableStruct *vartmp = new struct variableStruct ();
 					vartmp->varName = currentFunction->funParameters[i]->parName;
 					vartmp->varType = currentFunction->funParameters[i]->parTypePure;
@@ -661,7 +683,7 @@ Value * ast_compile (ast t) {
 			else if (!retEnabled && t->right->left->type->kind == Type_tag::TYPE_CHAR) Builder.CreateRet(c8(0));
 			retEnabled = false;
 			if (opt) {
-				TheFPM->run(*currentFunction->func);
+				TheFPM->run(*currentFunction->func, *TheFAM);
 			}
 			//Disable funcDef lock
 			FuncDefLockEnabled = false;
@@ -787,7 +809,8 @@ Value * ast_compile (ast t) {
 		}
 		sNew[sNewPos] = '\0';
 		Value *string = ConstantDataArray::getString(TheContext,StringRef(sNew));
-		Value *newString = Builder.CreateAlloca(ArrayType::get(i8,strlen(sNew)+1),0,"newString");
+		Value *newString = trackPtr(Builder.CreateAlloca(ArrayType::get(i8,strlen(sNew)+1),0,"newString"),
+		                             ArrayType::get(i8,strlen(sNew)+1));
 		Builder.CreateStore(string, newString);
 		return newString;
 	}
@@ -800,10 +823,10 @@ Value * ast_compile (ast t) {
 	case PLUS: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateAdd(v1, v2, "addtmp");
@@ -811,10 +834,10 @@ Value * ast_compile (ast t) {
 	case MINUS: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateSub(v1, v2, "subtmp");
@@ -822,10 +845,10 @@ Value * ast_compile (ast t) {
 	case TIMES: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateMul(v1, v2, "multmp");
@@ -833,10 +856,10 @@ Value * ast_compile (ast t) {
 	case DIV: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateSDiv(v1, v2, "divtmp");
@@ -844,10 +867,10 @@ Value * ast_compile (ast t) {
 	case MOD: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateSRem(v1, v2, "modtmp");
@@ -855,10 +878,10 @@ Value * ast_compile (ast t) {
 	case EQUALS: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateICmpEQ(v1, v2, "equalstmp");
@@ -866,10 +889,10 @@ Value * ast_compile (ast t) {
 	case NOTEQUALS: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateICmpNE(v1, v2, "notequalstmp");
@@ -877,10 +900,10 @@ Value * ast_compile (ast t) {
 	case LESSEQUALS: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateICmpSLE(v1, v2, "lessequalstmp");
@@ -888,10 +911,10 @@ Value * ast_compile (ast t) {
 	case GREATEQUALS: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateICmpSGE(v1, v2, "greatequalstmp");
@@ -899,10 +922,10 @@ Value * ast_compile (ast t) {
 	case GREATER: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateICmpSGT(v1, v2, "greatertmp");
@@ -910,10 +933,10 @@ Value * ast_compile (ast t) {
 	case LESS: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateICmpSLT(v1, v2, "lesstmp");
@@ -921,7 +944,7 @@ Value * ast_compile (ast t) {
 	case NOT: {
 		Value *v;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v = Builder.CreateLoad(l);
+		if (isVariable) v = loadValue(l);
 		else v = l;
 		isVariable = false;
 		return Builder.CreateNot(v, "nottmp");
@@ -929,10 +952,10 @@ Value * ast_compile (ast t) {
 	case AND: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateAnd(v1, v2, "andtmp");
@@ -940,10 +963,10 @@ Value * ast_compile (ast t) {
 	case OR: {
 		Value *v1, *v2;
 		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = Builder.CreateLoad(l);
+		if (isVariable) v1 = loadValue(l);
 		else v1 = l;
 		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = Builder.CreateLoad(r);
+		if (isVariable) v2 = loadValue(r);
 		else v2 = r;
 		isVariable = false;
 		return Builder.CreateOr(v1, v2, "ortmp");
@@ -956,13 +979,22 @@ Value * ast_compile (ast t) {
 void llvm_compile_and_dump (ast t) {
 	// Initialize the module and the optimization passes.
 	TheModule = std::make_unique<Module>("alan program", TheContext);
-	TheFPM = std::make_unique<legacy::FunctionPassManager>(TheModule.get());
-	TheFPM->add(createPromoteMemoryToRegisterPass());
-	TheFPM->add(createInstructionCombiningPass());
-	TheFPM->add(createReassociatePass());
-	TheFPM->add(createGVNPass());
-	TheFPM->add(createCFGSimplificationPass());
-	TheFPM->doInitialization();
+	TheFPM = std::make_unique<FunctionPassManager>();
+	TheLAM = std::make_unique<LoopAnalysisManager>();
+	TheFAM = std::make_unique<FunctionAnalysisManager>();
+	TheCGAM = std::make_unique<CGSCCAnalysisManager>();
+	TheMAM = std::make_unique<ModuleAnalysisManager>();
+	TheFPM->addPass(PromotePass());
+	TheFPM->addPass(InstCombinePass());
+	TheFPM->addPass(ReassociatePass());
+	TheFPM->addPass(GVNPass());
+	TheFPM->addPass(SimplifyCFGPass());
+	PassBuilder PB;
+	PB.registerModuleAnalyses(*TheMAM);
+	PB.registerCGSCCAnalyses(*TheCGAM);
+	PB.registerFunctionAnalyses(*TheFAM);
+	PB.registerLoopAnalyses(*TheLAM);
+	PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 	// declare void @writeInteger(i32)
 	FunctionType *writeInteger_type =
 		FunctionType::get(Type::getVoidTy(TheContext),
@@ -1002,7 +1034,7 @@ void llvm_compile_and_dump (ast t) {
 	// declare void @writeString(i8*)
 	FunctionType *writeString_type =
 		FunctionType::get(Type::getVoidTy(TheContext),
-		                  std::vector<Type *>{ PointerType::get(i8, 0) }, false);
+		                  std::vector<Type *>{ PointerType::get(TheContext, 0) }, false);
 	TheWriteString =
 		Function::Create(writeString_type, Function::ExternalLinkage,
 		                 "writeString", TheModule.get());
@@ -1035,7 +1067,7 @@ void llvm_compile_and_dump (ast t) {
 	// declare void @readString(i32, i8*)
 	FunctionType *readString_type =
 		FunctionType::get(Type::getVoidTy(TheContext),
-		                  std::vector<Type *>{ i32, PointerType::get(i8, 0) }, false);
+		                  std::vector<Type *>{ i32, PointerType::get(TheContext, 0) }, false);
 	TheReadString =
 		Function::Create(readString_type, Function::ExternalLinkage,
 		                 "readString", TheModule.get());
@@ -1072,7 +1104,7 @@ void llvm_compile_and_dump (ast t) {
 	funLibrary[9].funParameters.push_back(tmpFunParameter);
 	// declare i32 @strlen(i8*)
 	FunctionType *strlen_type =
-		FunctionType::get(i32, std::vector<Type *>{ PointerType::get(i8, 0) }, false);
+		FunctionType::get(i32, std::vector<Type *>{ PointerType::get(TheContext, 0) }, false);
 	TheStrlen =
 		Function::Create(strlen_type, Function::ExternalLinkage,
 		                 "strlen", TheModule.get());
@@ -1083,7 +1115,7 @@ void llvm_compile_and_dump (ast t) {
 	funLibrary[10].funParameters.push_back(tmpFunParameter);
 	// declare i32 @strcmp(i8*, i8*)
 	FunctionType *strcmp_type =
-		FunctionType::get(i32, std::vector<Type *>{ PointerType::get(i8, 0), PointerType::get(i8, 0) }, false);
+		FunctionType::get(i32, std::vector<Type *>{ PointerType::get(TheContext, 0), PointerType::get(TheContext, 0) }, false);
 	TheStrcmp =
 		Function::Create(strcmp_type, Function::ExternalLinkage,
 		                 "strcmp", TheModule.get());
@@ -1099,7 +1131,7 @@ void llvm_compile_and_dump (ast t) {
 	// declare void @strcpy(i8*, i8*)
 	FunctionType *strcpy_type =
 		FunctionType::get(Type::getVoidTy(TheContext),
-		                  std::vector<Type *>{ PointerType::get(i8, 0), PointerType::get(i8, 0) }, false);
+		                  std::vector<Type *>{ PointerType::get(TheContext, 0), PointerType::get(TheContext, 0) }, false);
 	TheStrcpy =
 		Function::Create(strcpy_type, Function::ExternalLinkage,
 		                 "strcpy", TheModule.get());
@@ -1115,7 +1147,7 @@ void llvm_compile_and_dump (ast t) {
 	// declare void @strcat(i8*, i8*)
 	FunctionType *strcat_type =
 		FunctionType::get(Type::getVoidTy(TheContext),
-		                  std::vector<Type *>{ PointerType::get(i8, 0), PointerType::get(i8, 0) }, false);
+		                  std::vector<Type *>{ PointerType::get(TheContext, 0), PointerType::get(TheContext, 0) }, false);
 	TheStrcat =
 		Function::Create(strcat_type, Function::ExternalLinkage,
 		                 "strcat", TheModule.get());
@@ -1144,7 +1176,7 @@ void llvm_compile_and_dump (ast t) {
 		TheModule->print(outs(), nullptr);
 		return;
 	}
-	TheFPM->run(*main);
+	TheFPM->run(*main, *TheFAM);
 	// Print out the IR.
 	TheModule->print(outs(), nullptr);
 }
