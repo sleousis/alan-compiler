@@ -38,7 +38,9 @@ static void init_targets() {
 bool emit_object(llvm::Module &m, const std::string &triple,
                  const std::string &outPath, std::string &err) {
   init_targets();
-  llvm::Triple t(triple);
+  /* Short triples such as x86_64-windows-gnu name no vendor, so normalize
+     them or the OS is lost and the object format falls back to ELF. */
+  llvm::Triple t(llvm::Triple::normalize(triple));
   const llvm::Target *target = llvm::TargetRegistry::lookupTarget(t, err);
   if (!target) return false;
   llvm::TargetOptions opts;
