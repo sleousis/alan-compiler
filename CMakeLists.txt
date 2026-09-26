@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.28)
+# C is enabled because LLVMConfig runs C checks for its dependencies.
+project(alanc C CXX)
+set(CMAKE_CXX_STANDARD 17)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+# LLVMConfigVersion only accepts major.minor, so check the major version here.
+find_package(LLVM REQUIRED CONFIG)
+if(NOT LLVM_VERSION_MAJOR EQUAL 23)
+  message(FATAL_ERROR "LLVM 23 is required, found ${LLVM_PACKAGE_VERSION} in ${LLVM_DIR}")
+endif()
+find_package(BISON 3.8 REQUIRED)
+find_package(FLEX 2.6 REQUIRED)
+BISON_TARGET(Parser parser.y ${CMAKE_BINARY_DIR}/parser.cpp DEFINES_FILE ${CMAKE_BINARY_DIR}/parser.hpp)
+set(FLEX_FLAGS "-s")
+if(WIN32)
+  # win_flex includes io.h instead of unistd.h
+  string(APPEND FLEX_FLAGS " --wincompat")
+endif()
+FLEX_TARGET(Lexer lexer.l ${CMAKE_BINARY_DIR}/lexer.cpp COMPILE_FLAGS ${FLEX_FLAGS})
+ADD_FLEX_BISON_DEPENDENCY(Lexer Parser)
+add_executable(alanc ast.cpp symbol.cpp error.cpp general.cpp cli.cpp emit.cpp
+               ${BISON_Parser_OUTPUTS} ${FLEX_Lexer_OUTPUTS})
+target_include_directories(alanc PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${LLVM_INCLUDE_DIRS})
+separate_arguments(LLVM_DEFS NATIVE_COMMAND ${LLVM_DEFINITIONS})
+target_compile_definitions(alanc PRIVATE ${LLVM_DEFS})
+llvm_map_components_to_libnames(LLVM_LIBS core support target passes
+  x86codegen x86asmparser x86desc x86info
+  aarch64codegen aarch64asmparser aarch64desc aarch64info)
+target_link_libraries(alanc PRIVATE ${LLVM_LIBS})
+if(MSVC)
+  set_property(TARGET alanc PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+  target_compile_definitions(alanc PRIVATE YY_NO_UNISTD_H _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+endif()

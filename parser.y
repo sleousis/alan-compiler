@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <libgen.h>
+#include "llvm/Support/Path.h"
 #include "ast.hpp"
 #include "symbol.hpp"
 #include "error.hpp"
@@ -220,8 +220,7 @@ int compile_to_module(const char *path, bool optimize, bool codegen) {
             stderr_is_tty() ? "\033[0m" : "", path);
     return 1;
   }
-  /* basename() may modify its argument, so give it a copy. */
-  filename = basename(strdup(path));
+  filename = strdup(llvm::sys::path::filename(path).str().c_str());
   if (yyparse()) return 1;
   fclose(yyin);
   initSymbolTable(997);

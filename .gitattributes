@@ -8,3 +8,4 @@ tests/inputs/*.txt -text
 tests/expected/*.txt -text
 runtime/test/rt_test_input.txt -text
 runtime/test/rt_test_expected.txt -text
+tools/versions.env text eol=lf

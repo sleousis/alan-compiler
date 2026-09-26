@@ -18,3 +18,7 @@ alan_lib_v2/*/*.a
 .atom-dbg.cson
 .vscode/
 *~
+
+# CMake build and packaged toolchains
+/build/
+/dist/

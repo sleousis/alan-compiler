@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: "0.16.0"
+  BISON_VERSION: "3.8.2"
+  CMAKE_VERSION: "4.4.3"
+
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+            zig: x86_64-windows
+          - platform: windows-arm64
+            os: windows-11-arm
+            zig: aarch64-windows
+          - platform: linux-x64
+            os: ubuntu-latest
+            container: ubuntu:20.04
+            zig: x86_64-linux
+            cmake: x86_64
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            container: arm64v8/ubuntu:20.04
+            zig: aarch64-linux
+            cmake: aarch64
+          - platform: macos-x64
+            os: macos-26-intel
+            zig: x86_64-macos
+          - platform: macos-arm64
+            os: macos-latest
+            zig: aarch64-macos
+    runs-on: ${{ matrix.os }}
+    container:
+      image: ${{ matrix.container || '' }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update
+          apt-get install -y git curl ca-certificates xz-utils g++ make flex m4 python3 \
+            libzstd-dev zlib1g-dev libxml2-dev
+          curl -fsSL "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION-linux-${{ matrix.cmake }}.tar.gz" \
+            | tar -xz -C /opt
+          echo "/opt/cmake-$CMAKE_VERSION-linux-${{ matrix.cmake }}/bin" >> "$GITHUB_PATH"
+          cd /tmp
+          curl -fsSL "https://ftp.gnu.org/gnu/bison/bison-$BISON_VERSION.tar.xz" | tar -xJ
+          (cd "bison-$BISON_VERSION" && ./configure --prefix=/opt/bison && make -j"$(nproc)" && make install)
+          echo "/opt/bison/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        if: runner.os != 'Linux'
+        with:
+          python-version: "3.13"
+
+      - name: Install zig (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-${{ matrix.zig }}-$ZIG_VERSION.tar.xz" \
+            | tar -xJ -C "$RUNNER_TEMP"
+          echo "ALAN_ZIG=$RUNNER_TEMP/zig-${{ matrix.zig }}-$ZIG_VERSION/zig" >> "$GITHUB_ENV"
+
+      - name: Install zig (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $zip = Join-Path $env:RUNNER_TEMP 'zig.zip'
+          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/zig-${{ matrix.zig }}-$env:ZIG_VERSION.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
+          "ALAN_ZIG=$env:RUNNER_TEMP\zig-${{ matrix.zig }}-$env:ZIG_VERSION\zig.exe" >> $env:GITHUB_ENV
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: sh tools/build-linux.sh
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: sh tools/build-macos.sh
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/build-windows.ps1
+
+      - name: Test (Unix)
+        if: runner.os != 'Windows'
+        env:
+          ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
+        run: |
+          python3 tests/run_examples.py --alanc dist/${{ matrix.platform }}/bin/alanc
+          python3 tests/run_errors.py --alanc dist/${{ matrix.platform }}/bin/alanc
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
+        run: |
+          python tests/run_examples.py --alanc dist/${{ matrix.platform }}/bin/alanc.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/run_errors.py --alanc dist/${{ matrix.platform }}/bin/alanc.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # alanc run must not leave linker side files behind
+          $pdb = @(Get-ChildItem -Path $env:TEMP -Filter 'alan*.pdb')
+          if ($pdb.Count -ne 0) { $pdb.FullName; exit 1 }

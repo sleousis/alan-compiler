@@ -113,6 +113,10 @@ static int link_module(const char *argv0, const char *src,
   std::string rt = find_tool("ALAN_RUNTIME", "../lib/libalanrt.a", argv0);
   std::vector<std::string> args = {zig, "cc", "-target", kTriple,
                                    std::string(obj), rt, "-o", out};
+#ifdef _WIN32
+  /* Without -s the Windows linker writes a .pdb next to the output. */
+  args.push_back("-s");
+#endif
   std::vector<llvm::StringRef> refs(args.begin(), args.end());
   std::string execErr;
   int rc = llvm::sys::ExecuteAndWait(zig, refs, std::nullopt, {}, 0, 0, &execErr);
