@@ -141,6 +141,18 @@ jobs:
           python3 tests/run_examples.py --alanc dist/${{ matrix.platform }}/bin/alanc
           python3 tests/run_errors.py --alanc dist/${{ matrix.platform }}/bin/alanc
 
+      - name: Diagnose (temporary)
+        if: failure() && runner.os == 'macOS'
+        env:
+          ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
+        run: |
+          set +e
+          p=dist/${{ matrix.platform }}/bin/alanc
+          $p check Examples/HelloWorld.alan; echo "check rc=$?"
+          $p Examples/HelloWorld.alan > /dev/null; echo "ir rc=$?"
+          lldb --batch -o run -k bt -k quit -- $p run Examples/HelloWorld.alan
+          true
+
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
