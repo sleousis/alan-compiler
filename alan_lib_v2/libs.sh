@@ -4,6 +4,7 @@ make lib -C stdio
 make lib -C stdlib
 make lib -C string
 
+rm -f lib.a
 ar -cvqs lib.a auxil/*.o math/*.o stdio/*.o stdlib/*.o string/*.o
 objcopy --redefine-syms=change_syms lib.a
 

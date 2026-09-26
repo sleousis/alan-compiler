@@ -55,7 +55,6 @@ jobs:
           nasm -v
           make -j"$(nproc)"
           cd alan_lib_v2
-          rm -f lib.a
           ./libs.sh
 
       - name: Smoke test
