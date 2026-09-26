@@ -39,6 +39,11 @@ cmake --build build --config Release --parallel "$(nproc)"
 # alanc must only depend on glibc.
 echo "NEEDED entries of build/alanc:"
 readelf -d build/alanc | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | tee build/needed.txt
+# sh has no pipefail, so an empty list means readelf failed.
+if [ ! -s build/needed.txt ]; then
+  echo "readelf printed no NEEDED entries for build/alanc" >&2
+  exit 1
+fi
 if grep -v -E '^(libc|libm|libpthread|libdl|librt)\.so\.[0-9]+$|^ld-linux[-a-z0-9_.]*\.so\.[0-9]+$' build/needed.txt; then
   echo "alanc links libraries outside glibc (listed above)" >&2
   exit 1

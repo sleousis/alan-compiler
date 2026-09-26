@@ -5,6 +5,13 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+  # release.yml runs the same jobs for a tag and publishes the bundles.
+  workflow_call:
+    inputs:
+      version:
+        description: "version in the bundle names, such as v2.0.0"
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -14,8 +21,8 @@ env:
   CMAKE_VERSION: "4.4.3"
 
 jobs:
-  build:
-    name: build (${{ matrix.platform }})
+  compiler:
+    name: compiler (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +56,8 @@ jobs:
       image: ${{ matrix.container || '' }}
     env:
       DEBIAN_FRONTEND: noninteractive
+      VERSION: ${{ inputs.version || 'dev' }}
+      PYTHON: ${{ startsWith(matrix.platform, 'windows-') && 'python' || 'python3' }}
     defaults:
       run:
         # bash runs with pipefail, so a failed download fails its step
@@ -104,6 +113,7 @@ jobs:
         run: |
           curl -fsSL --retry 5 "https://ziglang.org/download/${{ steps.versions.outputs.zig }}/zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}.tar.xz" \
             | tar -xJ -C "$RUNNER_TEMP"
+          echo "ZIG_DIR=$RUNNER_TEMP/zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}" >> "$GITHUB_ENV"
           echo "ALAN_ZIG=$RUNNER_TEMP/zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}/zig" >> "$GITHUB_ENV"
           echo "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-global-cache" >> "$GITHUB_ENV"
 
@@ -115,6 +125,7 @@ jobs:
           $zip = Join-Path $env:RUNNER_TEMP 'zig.zip'
           Invoke-WebRequest -Uri "https://ziglang.org/download/${{ steps.versions.outputs.zig }}/zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}.zip" -OutFile $zip
           Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
+          "ZIG_DIR=$env:RUNNER_TEMP\zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}" >> $env:GITHUB_ENV
           "ALAN_ZIG=$env:RUNNER_TEMP\zig-${{ matrix.zig }}-${{ steps.versions.outputs.zig }}\zig.exe" >> $env:GITHUB_ENV
           "ZIG_GLOBAL_CACHE_DIR=$env:GITHUB_WORKSPACE\.zig-global-cache" >> $env:GITHUB_ENV
 
@@ -192,3 +203,41 @@ jobs:
           # alanc run must not leave linker side files behind
           $pdb = @(Get-ChildItem -Path $env:TEMP -Filter 'alan*.pdb')
           if ($pdb.Count -ne 0) { $pdb.FullName; exit 1 }
+
+      # The bundle carries the zig that the tests used. On Windows ARM64
+      # that is the x86_64 build, which runs under emulation.
+      - name: Package
+        run: $PYTHON tools/package.py --platform ${{ matrix.platform }} --version "$VERSION" --zig "$ZIG_DIR"
+
+      # Runs the extracted bundle the way a user would, so alanc must find
+      # zig and the runtime inside it.
+      - name: Smoke test the bundle
+        run: |
+          unset ALAN_ZIG ALAN_RUNTIME
+          smoke="$RUNNER_TEMP/smoke"
+          rm -rf "$smoke"
+          mkdir -p "$smoke"
+          case "${{ matrix.platform }}" in
+            windows-*)
+              $PYTHON -m zipfile -e "out/alan-$VERSION-${{ matrix.platform }}.zip" "$smoke"
+              alanc="$smoke/alan/bin/alanc.exe"
+              test -f "$smoke/alan/zig/zig.exe" ;;
+            *)
+              tar -xzf "out/alan-$VERSION-${{ matrix.platform }}.tar.gz" -C "$smoke"
+              alanc="$smoke/alan/bin/alanc"
+              test -x "$alanc"
+              test -x "$smoke/alan/zig/zig" ;;
+          esac
+          test -f "$smoke/alan/lib/libalanrt.a"
+          test -f "$smoke/alan/README.txt"
+          tr -d '\r' < "$smoke/alan/VERSION" | grep -qx "$VERSION"
+          "$alanc" run Examples/HelloWorld.alan > "$smoke/out.txt"
+          tr -d '\r' < "$smoke/out.txt" | cmp - tests/expected/HelloWorld.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alan-${{ env.VERSION }}-${{ matrix.platform }}
+          path: out/alan-${{ env.VERSION }}-${{ matrix.platform }}.*
+          if-no-files-found: error
+          # the archive is already compressed
+          compression-level: 0
