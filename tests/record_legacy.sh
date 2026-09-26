@@ -32,6 +32,8 @@ try:
             p.stdin.write(line)
             p.stdin.flush()
         out, _ = p.communicate()
+        if p.returncode != 0:
+            raise SystemExit(f"{c['name']} exited with {p.returncode}, nothing recorded")
         (root / "tests/expected" / (c["name"] + ".txt")).write_bytes(out)
         print("recorded", c["name"], len(out), "exit", p.returncode)
 finally:

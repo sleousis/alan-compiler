@@ -24,4 +24,4 @@ The recording script feeds input one line at a time with a short pause for that 
 
 - `prog11` is not a case. It answered "no" to every magic square tried, so its expected behaviour is unknown.
 - `test2` is not a case. It calls a function with too few arguments and does not compile.
-- `test` reads `y` without setting it first. Its recorded output ("nikhsame") assumes `y` is not 5.
+- `test` is not a case. It reads the local `y` before setting it, so its output is undefined and can differ between platforms and runtimes.

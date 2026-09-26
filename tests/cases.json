@@ -130,11 +130,5 @@
     "file": "Examples/test_declaration.alan",
     "input": null,
     "opt": true
-  },
-  {
-    "name": "test",
-    "file": "Examples/test",
-    "input": "inputs/test.txt",
-    "opt": true
   }
 ]
