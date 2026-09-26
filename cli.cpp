@@ -117,8 +117,12 @@ static int link_module(const char *argv0, const char *src,
   std::string execErr;
   int rc = llvm::sys::ExecuteAndWait(zig, refs, std::nullopt, {}, 0, 0, &execErr);
   llvm::sys::fs::remove(obj);
-  if (rc < 0) {
+  if (rc == -1) {
     cli_error(src, "cannot run zig at " + zig + ": " + execErr);
+    return 1;
+  }
+  if (rc < 0) {
+    cli_error(src, "zig crashed while linking: " + execErr);
     return 1;
   }
   if (rc != 0) {
@@ -128,18 +132,33 @@ static int link_module(const char *argv0, const char *src,
   return 0;
 }
 
-/* Default output of build: the source path with .alan replaced by kExe. */
+/* Default output of build. A file name ending in .alan (and longer than
+   that) loses .alan and gains kExe. Any other name gains .exe on Windows
+   and .out elsewhere, so the output never replaces the source. */
 static std::string default_output(const char *src) {
   std::string out = src;
-  llvm::StringRef s(out);
-  if (s.ends_with(".alan") && s.size() > 5)
-    out.resize(out.size() - 5);
-  return out + kExe;
+  llvm::StringRef name = llvm::sys::path::filename(out);
+  if (name.ends_with(".alan") && name.size() > 5)
+    return out.substr(0, out.size() - 5) + kExe;
+  return out + (kExe[0] ? kExe : ".out");
+}
+
+/* True when out names the source file itself. */
+static bool is_source(const char *src, const std::string &out) {
+  if (out == src) return true;
+  bool same = false;
+  return !llvm::sys::fs::equivalent(src, out, same) && same;
 }
 
 static int cmd_build(const char *argv0, const BuildOptions &o) {
-  if (compile_to_module(o.src, o.opt, true) != 0) return 1;
   std::string out = o.out.empty() ? default_output(o.src) : o.out;
+  if (is_source(o.src, out)) {
+    cli_error(o.src, o.out.empty()
+                         ? "cannot choose an output name, use -o"
+                         : "the output file is the source file, use another -o");
+    return 1;
+  }
+  if (compile_to_module(o.src, o.opt, true) != 0) return 1;
   return link_module(argv0, o.src, out);
 }
 

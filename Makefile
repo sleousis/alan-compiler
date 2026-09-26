@@ -23,7 +23,7 @@ ast.o: ast.cpp ast.hpp
 
 emit.o: emit.cpp emit.hpp
 
-cli.o: cli.cpp cli.hpp emit.hpp
+cli.o: cli.cpp cli.hpp emit.hpp error.hpp
 
 alanc: lexer.o parser.o ast.o error.o general.o symbol.o cli.o emit.o
 	$(CXX) $(CXXFLAGS) -o alanc $^ $(LDFLAGS)
