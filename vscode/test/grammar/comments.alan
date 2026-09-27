@@ -1,0 +1,28 @@
+-- SYNTAX TEST "source.alan" "comments hold any text and nest"
+(* a star * and a paren ) and a quote " inside *) x = 1;
+-- <------------------------------------------------- comment.block.alan
+--                                                ^ - comment.block.alan
+--                                                  ^ keyword.operator.alan
+(* a lone quote " does not start a string *) y = 2;
+--              ^ comment.block.alan
+--              ^ - string.quoted.double.alan
+--                                           ^ - comment.block.alan
+(* two (* three (* deep *) two *) one *) z = 3;
+--                         ^^^ comment.block.alan
+--                                ^^^ comment.block.alan
+--                                       ^ - comment.block.alan
+(* spans
+   several lines -- with a dash comment inside
+--                  ^^^^ comment.block.alan
+--                  ^^^^ - comment.line.double-dash.alan
+   and (* a nested one *) here
+--                        ^^^^ comment.block.alan
+*) w = 4;
+-- ^ - comment.block.alan
+(*)*) v = 5;
+--    ^ - comment.block.alan
+(***) u = 6;
+--    ^ - comment.block.alan
+t = 7; -- line comment with (* and "
+--     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ comment.line.double-dash.alan
+--                          ^^ - comment.block.alan

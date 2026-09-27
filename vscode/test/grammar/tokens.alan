@@ -1,0 +1,44 @@
+-- SYNTAX TEST "source.alan" "declarations, calls and literals"
+  swap (x : reference int, y : reference int) : proc
+--^^^^ entity.name.function.alan
+--          ^^^^^^^^^ storage.modifier.alan
+--                    ^^^ storage.type.alan
+--                                              ^^^^ storage.type.alan
+  writeArray (msg : reference byte [], n : int) : proc
+--^^^^^^^^^^ entity.name.function.alan
+--                            ^^^^ storage.type.alan
+  swap(x[i], x[i+1]);
+--^^^^ - entity.name.function.alan
+--^^^^ - support.function.alan
+  writeInteger(strlen(s) + 42);
+--^^^^^^^^^^^^ support.function.alan
+--             ^^^^^^ support.function.alan
+--                         ^^ constant.numeric.integer.alan
+--                       ^ keyword.operator.alan
+  writeString ("x");
+--^^^^^^^^^^^ support.function.alan
+  if (a <= b & !c | d != e) done = true; else done = false;
+--      ^^ keyword.operator.alan
+--           ^ keyword.operator.alan
+--             ^ keyword.operator.alan
+--                ^ keyword.operator.alan
+--                    ^^ keyword.operator.alan
+--                                 ^^^^ constant.language.boolean.alan
+--                                       ^^^^ keyword.control.alan
+--                                                   ^^^^^ constant.language.boolean.alan
+  while (i % 2 >= 0) i = i - 1;
+--^^^^^ keyword.control.alan
+--         ^ keyword.operator.alan
+  c = '\x4f'; d = '\''; e = 'q';
+--    ^^^^^^ constant.character.alan
+--                ^^^^ constant.character.alan
+--                          ^^^ constant.character.alan
+  s = "tab\t quote\" hex\x41 end";
+--    ^ string.quoted.double.alan
+--        ^^ constant.character.escape.alan
+--                ^^ constant.character.escape.alan
+--                      ^^^^ constant.character.escape.alan
+--                              ^ string.quoted.double.alan
+  interior : int;
+--^^^^^^^^ - storage.type.alan
+--^^ - keyword.control.alan
