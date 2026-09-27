@@ -317,6 +317,19 @@ describe("DebugBuilds", () => {
     b.removeAll();
   });
 
+  it("leaves old folders of another user alone and says nothing about them", async () => {
+    const lines: string[] = [];
+    const mine = new DebugBuilds(root);
+    const old = await mine.create();
+    const past = new Date(Date.now() - 2 * 24 * 60 * 60_000);
+    utimesSync(old, past, past);
+    // Another user: the folder's owner is not this uid.
+    const b = new DebugBuilds(root, (l) => lines.push(l), (process.getuid?.() ?? 0) + 1);
+    await b.sweep(24 * 60 * 60_000);
+    assert.deepEqual(readdirSync(root), [path.basename(old)]);
+    assert.deepEqual(lines, []);
+  });
+
   it("logs a folder it cannot remove", async () => {
     const lines: string[] = [];
     const b = new DebugBuilds(root, (l) => lines.push(l));

@@ -7,7 +7,7 @@ import { ChildProcess, spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import * as path from "node:path";
 import type * as vscode from "vscode";
-import { installedCompilerPath } from "./installer";
+import { installedCompilerPath, isOlderTag, MIN_COMPILER } from "./installer";
 import { toWslPath } from "./wsl";
 
 export interface CompilerRef {
@@ -151,7 +151,11 @@ function killTree(child: ChildProcess): void {
   if (pid === undefined) return;
   if (process.platform === "win32") {
     const taskkill = spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { windowsHide: true, stdio: "ignore" });
+    // taskkill fails when it cannot start or cannot stop the tree. Then at least alanc goes.
     taskkill.on("error", () => child.kill());
+    taskkill.on("exit", (code) => {
+      if (code !== 0) child.kill();
+    });
     return;
   }
   try {
@@ -244,9 +248,72 @@ function isFile(p: string): boolean {
 /** Compilers inside WSL that answered, so each save does not start WSL twice. */
 const wslFound = new Set<string>();
 
-/** Forgets what findCompiler learned, after the settings or the installed copy change. */
+/** Forgets what findCompiler and compilerVersion learned, after the settings or the installed copy change. */
 export function forgetCompiler(): void {
   wslFound.clear();
+  versions.clear();
+}
+
+/**
+ * What `alanc --version` says about a compiler. "old" is a version below
+ * MIN_COMPILER, or a compiler without --version (before 2.0), which exits
+ * non-zero or prints something else. "unknown" means it could not tell:
+ * the compiler did not start or did not answer in time.
+ */
+export type VersionCheck =
+  | { status: "ok"; version: string }
+  | { status: "old"; version?: string }
+  | { status: "unknown"; detail?: string };
+
+/** How long `alanc --version` may take. WSL can take a while to start. */
+const VERSION_TIMEOUT_MS = 5000;
+const WSL_VERSION_TIMEOUT_MS = 15000;
+
+/** Reads the answer to `alanc --version`, whose first line is `alanc <version>`. */
+export function versionCheck(r: RunResult): VersionCheck {
+  if (r.failure) return { status: "unknown", detail: r.detail };
+  const m = /^alanc (\S+)\s*$/.exec(stripAnsi(r.stdout).split(/\r?\n/)[0] ?? "");
+  if (r.code !== 0 || !m) return { status: "old" };
+  const version = m[1];
+  // A build from source without a release version says dev.
+  if (version === "dev" || !isOlderTag(version, MIN_COMPILER)) return { status: "ok", version };
+  return { status: "old", version };
+}
+
+/** Answers of `--version`, by the compiler file and its modification time, or by the WSL name. */
+const versions = new Map<string, { mtimeMs: number; check: VersionCheck }>();
+
+/**
+ * Runs cmd with args (a compiler with --version) once for each version of
+ * the file key, and remembers a clear answer. A changed modification time
+ * asks again. Exported for the tests, which use fake compilers.
+ */
+export async function probeVersion(
+  key: string, cmd: string, args: string[], opts: { timeoutMs: number; wsl?: boolean },
+): Promise<VersionCheck> {
+  let mtimeMs = 0;
+  if (!opts.wsl) {
+    try {
+      mtimeMs = statSync(key).mtimeMs;
+    } catch (e) {
+      return { status: "unknown", detail: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  const id = opts.wsl ? `wsl:${key}` : key;
+  const known = versions.get(id);
+  if (known && known.mtimeMs === mtimeMs) return known.check;
+  const check = versionCheck(await runCompiler(cmd, args, { timeoutMs: opts.timeoutMs }));
+  if (check.status !== "unknown") versions.set(id, { mtimeMs, check });
+  return check;
+}
+
+/** Asks the compiler ref for its version with `alanc --version`. */
+export function compilerVersion(ref: CompilerRef): Promise<VersionCheck> {
+  if (ref.wsl) {
+    return probeVersion(ref.exe, "wsl.exe", ["-e", "sh", "-c", WSL_LAUNCH, ref.exe, "--version"],
+      { timeoutMs: WSL_VERSION_TIMEOUT_MS, wsl: true });
+  }
+  return probeVersion(ref.exe, ref.exe, ["--version"], { timeoutMs: VERSION_TIMEOUT_MS });
 }
 
 async function wslHas(exe: string): Promise<boolean> {

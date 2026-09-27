@@ -1,11 +1,11 @@
 import { strict as assert } from "assert";
 import {
-  buildOutputPath, commandLine, failureSummary, locateCompiler, needsSaveAs, parseCompilerOutput, runCompiler, searchPath,
-  WSL_LAUNCH,
+  buildOutputPath, commandLine, compilerVersion, failureSummary, forgetCompiler, locateCompiler, needsSaveAs,
+  parseCompilerOutput, probeVersion, runCompiler, searchPath, versionCheck, WSL_LAUNCH,
 } from "../../src/client/compiler";
 import { toWslPath } from "../../src/client/wsl";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { checkFile, compilerDiagnostics } from "../../src/server/compilerCheck";
@@ -364,5 +364,91 @@ describe("the WSL wrapper on Windows", function () {
     assert.equal(r.failure, undefined, r.detail);
     assert.equal(r.code, 0, r.stderr);
     assert.deepEqual(r.stdout.split("\0").slice(0, -1), hostile);
+  });
+});
+
+describe("the compiler's version", () => {
+  const node = process.execPath;
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), "alan-version-"));
+    forgetCompiler();
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** A fake compiler: a script node runs, which writes a count of its runs next to it. */
+  function fake(name: string, body: string): { file: string; runs: () => number } {
+    const file = path.join(dir, `${name}.js`);
+    const count = path.join(dir, `${name}.runs`);
+    writeFileSync(file, `require("fs").appendFileSync(${JSON.stringify(count)}, "x");\n${body}\n`);
+    return { file, runs: () => (existsSync(count) ? readFileSync(count, "utf8").length : 0) };
+  }
+  const probe = (file: string, timeoutMs = 5000) => probeVersion(file, node, [file, "--version"], { timeoutMs });
+
+  it("reads the first line", () => {
+    const r = (stdout: string, code = 0) => versionCheck({ code, stdout, stderr: "" });
+    assert.deepEqual(r("alanc v2.0.0\n"), { status: "ok", version: "v2.0.0" });
+    assert.deepEqual(r("alanc v2.3.1\r\nmore\n"), { status: "ok", version: "v2.3.1" });
+    assert.deepEqual(r("alanc dev\n"), { status: "ok", version: "dev" });
+    assert.deepEqual(r("alanc v1.9.0\n"), { status: "old", version: "v1.9.0" });
+    assert.deepEqual(r("alanc v2.0.0-rc1\n"), { status: "old", version: "v2.0.0-rc1" });
+    assert.deepEqual(r("usage: alanc file\n"), { status: "old" });
+    assert.deepEqual(r(""), { status: "old" });
+    assert.deepEqual(r("alanc v2.0.0\n", 1), { status: "old" });
+    assert.deepEqual(versionCheck({ code: null, stdout: "", stderr: "", failure: "timeout", detail: "slow" }),
+      { status: "unknown", detail: "slow" });
+  });
+
+  it("accepts a compiler of the minimum version or newer, and a dev build", async () => {
+    assert.deepEqual(await probe(fake("new", 'console.log("alanc v2.1.0")').file), { status: "ok", version: "v2.1.0" });
+    assert.deepEqual(await probe(fake("min", 'console.log("alanc v2.0.0")').file), { status: "ok", version: "v2.0.0" });
+    assert.deepEqual(await probe(fake("dev", 'console.log("alanc dev")').file), { status: "ok", version: "dev" });
+  });
+
+  it("finds a compiler below the minimum too old", async () => {
+    assert.deepEqual(await probe(fake("old", 'console.log("alanc v1.5.0")').file), { status: "old", version: "v1.5.0" });
+  });
+
+  it("takes a compiler whose --version fails for one from before 2.0", async () => {
+    // Like alanc 1.x, which reads --version as a file name.
+    const fails = fake("fails", 'console.error("cannot open --version"); process.exit(1)');
+    assert.deepEqual(await probe(fails.file), { status: "old" });
+    const other = fake("other", 'console.log("Alan compiler 1.0")');
+    assert.deepEqual(await probe(other.file), { status: "old" });
+  });
+
+  it("asks each compiler once until the file changes", async () => {
+    const c = fake("cached", 'console.log("alanc v1.0.0")');
+    assert.equal((await probe(c.file)).status, "old");
+    assert.equal((await probe(c.file)).status, "old");
+    assert.equal(c.runs(), 1);
+    writeFileSync(c.file, readFileSync(c.file, "utf8").replace("v1.0.0", "v2.0.0"));
+    const later = new Date(Date.now() + 5000);
+    utimesSync(c.file, later, later);
+    assert.deepEqual(await probe(c.file), { status: "ok", version: "v2.0.0" });
+    assert.equal(c.runs(), 2);
+    forgetCompiler();
+    await probe(c.file);
+    assert.equal(c.runs(), 3);
+  });
+
+  it("gives up after the timeout and asks again next time", async () => {
+    const slow = fake("slow", 'setTimeout(() => console.log("alanc v2.0.0"), 5000)');
+    const started = Date.now();
+    assert.equal((await probe(slow.file, 300)).status, "unknown");
+    assert.ok(Date.now() - started < 4000, "it did not wait for the compiler");
+    assert.equal((await probe(slow.file, 300)).status, "unknown");
+    assert.equal(slow.runs(), 2);
+  });
+
+  it("cannot tell for a compiler that does not start", async () => {
+    assert.equal((await compilerVersion({ exe: path.join(dir, "missing-alanc"), wsl: false })).status, "unknown");
+  });
+
+  it("runs alanc --version for a compiler on disk", async function () {
+    if (process.platform === "win32") this.skip();
+    const exe = path.join(dir, "alanc");
+    writeFileSync(exe, '#!/bin/sh\n[ "$1" = --version ] && echo "alanc v2.4.0"\n', { mode: 0o755 });
+    assert.deepEqual(await compilerVersion({ exe, wsl: false }), { status: "ok", version: "v2.4.0" });
   });
 });

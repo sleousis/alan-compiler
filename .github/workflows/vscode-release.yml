@@ -9,15 +9,18 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  # Tests and packages the extension. It can only read the repository.
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     defaults:
       run:
         working-directory: vscode
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
@@ -49,12 +52,47 @@ jobs:
           npm run package -- --out "alan-$GITHUB_REF_NAME.vsix"
           ls -l *.vsix
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsix
+          path: vscode/alan-${{ github.ref_name }}.vsix
+          if-no-files-found: error
+
+  # Releases and publishes the package the build job made, without building
+  # anything. The store tools come from the lockfile.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsix
+          path: vscode
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           files: vscode/alan-${{ github.ref_name }}.vsix
           fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # The compiler installers ask for the latest release, which must
+          # stay a compiler release.
+          make_latest: false
           body: |
             Alan extension for Visual Studio Code, from tag ${{ github.ref_name }}.
             Install the `.vsix` with **Extensions: Install from VSIX...** in VS Code, or run `code --install-extension alan-${{ github.ref_name }}.vsix`.
@@ -93,15 +131,21 @@ jobs:
           echo "marketplace=$marketplace" >> "$GITHUB_OUTPUT"
           echo "openvsx=$openvsx" >> "$GITHUB_OUTPUT"
 
+      # vsce and ovsx at the versions the lockfile pins, without install scripts.
+      - name: Install the publishing tools
+        if: steps.publish.outputs.marketplace == 'true' || steps.publish.outputs.openvsx == 'true'
+        run: npm ci --ignore-scripts
+
+      # npx --no fails instead of downloading a tool that is not installed.
       - name: Publish to VS Code Marketplace
         if: steps.publish.outputs.marketplace == 'true'
-        run: npx vsce publish --packagePath "alan-$GITHUB_REF_NAME.vsix"
+        run: npx --no vsce publish --packagePath "alan-$GITHUB_REF_NAME.vsix"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX
         if: steps.publish.outputs.openvsx == 'true'
         # ovsx reads the token from OVSX_PAT.
-        run: npx --yes ovsx@1 publish "alan-$GITHUB_REF_NAME.vsix"
+        run: npx --no ovsx publish "alan-$GITHUB_REF_NAME.vsix"
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}

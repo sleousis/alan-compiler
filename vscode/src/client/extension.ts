@@ -1,15 +1,15 @@
 // Activates the extension: registers the commands, the alan task type and
 // the alan debug type, starts the language server once an Alan document is
 // open, checks saved files with the compiler, and offers to install the
-// compiler when it is missing or to update an installed copy that is too old.
+// compiler when it is missing or to update one that is too old.
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from "vscode-languageclient/node";
 import { compilerDiagnostics } from "../server/compilerCheck";
 import { CompilerProblems, Host, offerInstall, registerCommands, reportFailure, savedDocument, useWsl } from "./commands";
-import { findCompiler, forgetCompiler, runCompiler } from "./compiler";
+import { CompilerRef, compilerVersion, findCompiler, forgetCompiler, runCompiler } from "./compiler";
 import { AlanDebugConfigurationProvider, DebugBuilds, DebugDeps, SavedSource, dynamicProvider } from "./debug";
-import { installedTag, isOlderTag, MIN_COMPILER } from "./installer";
+import { installedCompilerPath, MIN_COMPILER } from "./installer";
 
 let client: LanguageClient | undefined;
 let started: Promise<void> | undefined;
@@ -40,7 +40,9 @@ export function activate(context: vscode.ExtensionContext): void {
     });
     if (offered) return;
     offered = true;
-    if (!(await findCompiler(context))) await offerInstall();
+    const ref = await findCompiler(context);
+    if (ref) await offerUpdate(context, ref);
+    else await offerInstall();
   };
 
   context.subscriptions.push(
@@ -50,7 +52,9 @@ export function activate(context: vscode.ExtensionContext): void {
       if (doc.languageId !== "alan" || doc.uri.scheme !== "file") return;
       if (!vscode.workspace.getConfiguration("alan").get<boolean>("checkOnSave", true)) return;
       const ref = await findCompiler(context);
-      if (ref) await problems.check(doc, ref);
+      if (!ref) return;
+      void offerUpdate(context, ref);
+      await problems.check(doc, ref);
     }),
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.languageId === "alan" && e.contentChanges.length) problems.changed(e.document);
@@ -61,7 +65,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
   for (const doc of vscode.workspace.textDocuments) void alanOpened(doc);
-  void offerUpdate(context);
 }
 
 /** A debug build may link the C library for debugging first, which takes a while once. */
@@ -132,16 +135,32 @@ function registerDebugging(host: Host): void {
   );
 }
 
-/** Offers to update the installed compiler when it is older than MIN_COMPILER and in use. */
-async function offerUpdate(context: vscode.ExtensionContext): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration("alan");
-  if (cfg.get<string>("compilerPath", "").trim()) return;
-  if (process.platform === "win32" && cfg.get<boolean>("useWsl", false)) return;
-  const tag = installedTag(context.globalStorageUri.fsPath);
-  if (!tag || !isOlderTag(tag, MIN_COMPILER)) return;
-  const pick = await vscode.window.showInformationMessage(
-    `The installed Alan compiler ${tag} is older than ${MIN_COMPILER}, which this extension needs. Update it now?`,
-    "Update", "Not now");
+/** Compilers already found too old, by path and answer, so each is mentioned once. */
+const warned = new Set<string>();
+
+/**
+ * Offers to update the compiler in use when `alanc --version` shows it is
+ * older than MIN_COMPILER, or it has no --version (before 2.0). A compiler
+ * the alan.compilerPath setting names gets a pointer to the setting, as an
+ * install does not replace it.
+ */
+async function offerUpdate(context: vscode.ExtensionContext, ref: CompilerRef): Promise<void> {
+  const check = await compilerVersion(ref);
+  if (check.status !== "old") return;
+  const key = `${ref.wsl ? "wsl:" : ""}${ref.exe} ${check.version ?? ""}`;
+  if (warned.has(key)) return;
+  warned.add(key);
+  const installed = !ref.wsl && ref.exe === installedCompilerPath(context.globalStorageUri.fsPath, process.platform);
+  const who = installed ? "The installed Alan compiler" : `The Alan compiler at ${ref.exe}`;
+  const what = `${who} is ${check.version ?? "from before 2.0"} and this extension needs ${MIN_COMPILER} or later.`;
+  if (vscode.workspace.getConfiguration("alan").get<string>("compilerPath", "").trim()) {
+    const pick = await vscode.window.showWarningMessage(
+      `${what} It comes from the alan.compilerPath setting. Point the setting at a newer compiler, or clear it and install the latest.`,
+      "Open Settings");
+    if (pick === "Open Settings") await vscode.commands.executeCommand("workbench.action.openSettings", "alan.compilerPath");
+    return;
+  }
+  const pick = await vscode.window.showInformationMessage(`${what} Install the latest now?`, "Update", "Not now");
   if (pick === "Update") await vscode.commands.executeCommand("alan.install");
 }
 
