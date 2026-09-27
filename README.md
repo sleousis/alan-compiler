@@ -41,7 +41,7 @@ Add `-O` to `run` or `build` to turn on optimization. The first program takes a 
 
 ## Editor support
 
-The Alan extension for Visual Studio Code adds highlighting, live errors, completion, formatting, rename, one-click Run and debugging with breakpoints. It installs the compiler for you on first use. Download the `.vsix` from the [Releases page](https://github.com/sleousis/alan-compiler/releases) (tags starting with `vscode-v`) and install it with **Extensions: Install from VSIX...**. Once the extension is published, it is also on the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=sleousis.alan) and [Open VSX](https://open-vsx.org/extension/sleousis/alan). The extension lives in [`vscode/`](vscode) and its [README](vscode/README.md) lists its commands and settings.
+The Alan extension for Visual Studio Code adds highlighting, live errors, completion, formatting, rename, one-click Run and debugging with breakpoints. It installs the compiler for you on first use. Download the `.vsix` from the [Releases page](https://github.com/sleousis/alan-compiler/releases) (tags starting with `vscode-v`) and install it with **Extensions: Install from VSIX...**. Once the extension is published, it is also on the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=SavvasLeousis.alan) and [Open VSX](https://open-vsx.org/extension/SavvasLeousis/alan). The extension lives in [`vscode/`](vscode) and its [README](vscode/README.md) lists its commands and settings.
 
 ## Download
 

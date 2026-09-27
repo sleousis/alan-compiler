@@ -26,8 +26,8 @@ describe("extension manifest", () => {
   });
 
   it("makes the extension the default formatter for Alan", () => {
-    assert.equal(manifest.contributes.configurationDefaults["[alan]"]["editor.defaultFormatter"], "sleousis.alan");
-    assert.equal(`${manifest.publisher}.${manifest.name}`, "sleousis.alan");
+    assert.equal(manifest.contributes.configurationDefaults["[alan]"]["editor.defaultFormatter"], "SavvasLeousis.alan");
+    assert.equal(`${manifest.publisher}.${manifest.name}`, "SavvasLeousis.alan");
   });
 
   it("offers the four snippets", () => {
