@@ -60,6 +60,12 @@ describe("diagnostics", () => {
     assert.equal(firstError("m () : proc\n{ y = 1; x = 'ab'; }")!.message, "Invalid character constant");
     assert.equal(firstError("m () : proc\n{ }"), undefined);
   });
+  it("analyses a text once while it stays the same", () => {
+    const text = "m () : proc\n{ y = 1; }";
+    const a = analyzeSource(text);
+    assert.equal(analyzeSource(text), a);
+    assert.notEqual(analyzeSource(text + " "), a);
+  });
   it("accepts a text already analysed", () => {
     const text = "m () : proc\n{ y = 1; }";
     assert.deepEqual(computeDiagnostics(analyzeSource(text)), computeDiagnostics(text));

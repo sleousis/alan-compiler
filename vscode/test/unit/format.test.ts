@@ -18,6 +18,11 @@ function shape(src: string): unknown {
 const fmt = (lines: string[]) => formatDocument(lines.join("\n"), opts);
 
 describe("formatter", () => {
+  it("leaves a file past the compiler's nesting limits alone", () => {
+    const deep = `m () : proc\n x : int;\n{\n${"{\n".repeat(20000)}x = 1;\n${"}\n".repeat(20000)}}\n`;
+    assert.equal(formatDocument(deep, opts), undefined);
+  });
+
   it("formats a messy program", () => {
     const src = "main():proc\nx:int;\n{x=1+2*3;if(x>3)writeInteger(x);else{x=0;}}\n";
     assert.equal(formatDocument(src, opts), [

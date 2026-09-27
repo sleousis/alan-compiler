@@ -1,8 +1,7 @@
 // Go to definition and the document outline.
 import { FuncDecl, VarDecl } from "./ast";
-import { symbolAt } from "./analysis";
+import { analyzeSource, symbolAt } from "./analysis";
 import { Pos, Range } from "./lexer";
-import { parse } from "./parser";
 import { Task, run } from "./trampoline";
 
 /** The range of the declaration of the name at a position. Library functions have none. */
@@ -58,6 +57,6 @@ function* outline(f: FuncDecl, depth: number): Task<OutlineSymbol> {
 
 /** The functions and local variables of the file, nested as declared. */
 export function documentSymbols(src: string): OutlineSymbol[] {
-  const { program } = parse(src);
+  const { program } = analyzeSource(src);
   return program ? [run(outline(program, 1))] : [];
 }

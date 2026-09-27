@@ -144,6 +144,26 @@ describe("parser", () => {
     assert.deepEqual(r.diagnostics.map(d => d.message), ["expected an expression but found ')'"]);
     assert.deepEqual(r.program!.body.stmts.map(s => s.kind), ["call"]);
   });
+  it("reports no parser error on an int that is out of range, as the compiler stops at the lexer error", () => {
+    const r = parse("main () : proc\n  x : int;\n{\n  x = 1 99999999999;\n}\n");
+    assert.deepEqual(r.diagnostics.map(d => [d.range.start.line, d.message]),
+      [[3, "Integer constant 99999999999 is out of range (0 to 2147483647)"]]);
+  });
+
+  // A condition in parentheses is tried as a condition and then as an
+  // expression. Each level must not parse its inside again.
+  const fastEnough = (what: string, src: string) => it(`parses ${what} in linear time`, () => {
+    const time = (s: string) => { const t0 = process.hrtime.bigint(); parse(s); return Number(process.hrtime.bigint() - t0) / 1e6; };
+    const ms = Math.min(time(src), time(src), time(src));
+    assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms`);
+  });
+  const levels = 3000;
+  fastEnough(`${levels} parenthesised expressions in a condition`,
+    `m () : proc\n x : int;\n{ if (${"(".repeat(levels)}x${"+1)".repeat(levels)} > 0) ; }`);
+  fastEnough(`${levels} unclosed parentheses in a condition`, `m () : proc\n x : int;\n{ if (${"(".repeat(levels)}`);
+  fastEnough(`${levels} parenthesised comparisons`,
+    `m () : proc\n x : int;\n{ if (${"(".repeat(levels)}x == 1${") & (x > 0)".repeat(levels)}) ; }`);
+
   it("does not swallow the closing brace after a missing if body", () => {
     const r = parse("m () : proc\n{\n  if (x > 0)\n}\n");
     assert.equal(r.diagnostics.length, 1);

@@ -16,7 +16,28 @@ export interface SourceAnalysis {
   clean: boolean;
 }
 
+/**
+ * The last analyses, by text. Between two edits the editor asks for hover,
+ * completion, highlights and more, and they all share one analysis.
+ */
+const recent: { src: string; result: SourceAnalysis }[] = [];
+const RECENT_SIZE = 4;
+
+/** The analysis of a text, reused while the text stays the same. Callers must not change it. */
 export function analyzeSource(src: string): SourceAnalysis {
+  const hit = recent.findIndex((r) => r.src === src);
+  if (hit >= 0) {
+    const [entry] = recent.splice(hit, 1);
+    recent.unshift(entry);
+    return entry.result;
+  }
+  const result = analyzeFresh(src);
+  recent.unshift({ src, result });
+  recent.length = Math.min(recent.length, RECENT_SIZE);
+  return result;
+}
+
+function analyzeFresh(src: string): SourceAnalysis {
   const { program, diagnostics } = parse(src);
   const result: SourceAnalysis = { syntax: diagnostics, clean: diagnostics.length === 0 };
   if (program) {

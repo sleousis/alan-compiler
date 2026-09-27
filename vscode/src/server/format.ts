@@ -4,7 +4,7 @@
 // The result is lexed again and compared with the input before it is returned.
 import { Block, FuncDecl, Stmt } from "./ast";
 import { Comment, Pos, Range, Token, TokenKind, lex } from "./lexer";
-import { parse } from "./parser";
+import { analyzeSource } from "./analysis";
 import { Task, run } from "./trampoline";
 
 export interface FormatOptions { tabSize: number; insertSpaces: boolean; }
@@ -104,8 +104,12 @@ function lineStarts(program: FuncDecl, tokens: Token[]): LineStarts {
 }
 
 function layout(src: string, opts: FormatOptions): Layout | undefined {
-  const parsed = parse(src);
-  if (!parsed.program || parsed.diagnostics.length > 0) return undefined;
+  // Nothing to format with syntax errors, and nothing sensible past the
+  // compiler's nesting limits, where the indent alone could exceed the
+  // longest string JavaScript allows.
+  const parsed = analyzeSource(src);
+  if (!parsed.program || !parsed.clean) return undefined;
+  if (parsed.analysis?.diagnostics.some((d) => d.code === "nesting")) return undefined;
   const lexed = lex(src, { keepComments: true });
   const tokens = lexed.tokens.filter((t) => t.kind !== "eof");
   const comments = lexed.comments ?? [];
