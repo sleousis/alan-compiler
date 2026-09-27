@@ -3,7 +3,7 @@
 // cover it directly. Arguments always go to the compiler as an array, never
 // through a shell command line, so paths with spaces, quotes or non-ASCII
 // letters reach it unchanged.
-import { execFile, ExecFileException } from "node:child_process";
+import { ChildProcess, spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import * as path from "node:path";
 import type * as vscode from "vscode";
@@ -142,30 +142,94 @@ export interface RunResult {
 }
 
 /**
+ * Stops pid and every process it started. alanc runs zig, which runs its
+ * own children, and killing alanc alone would leave them writing into the
+ * output folder. On POSIX the compiler runs in its own process group.
+ */
+function killTree(child: ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  if (process.platform === "win32") {
+    const taskkill = spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { windowsHide: true, stdio: "ignore" });
+    taskkill.on("error", () => child.kill());
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+}
+
+/** How long to wait for the output to close after killing the process tree. */
+const KILL_GRACE_MS = 5000;
+
+/**
  * Runs cmd with an argument array (no shell) and collects its output.
- * Aborting signal kills the process.
+ * A timeout, an abort or too much output kills the process with all its
+ * children.
  */
 export function runCompiler(
   cmd: string, args: string[], opts: { timeoutMs: number; cwd?: string; maxBuffer?: number; signal?: AbortSignal },
 ): Promise<RunResult> {
   return new Promise((resolve) => {
-    execFile(cmd, args, {
-      encoding: "utf8", timeout: opts.timeoutMs, cwd: opts.cwd, windowsHide: true,
-      maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024, signal: opts.signal,
-    }, (err: ExecFileException | null, stdout: string, stderr: string) => {
-      if (!err) return resolve({ code: 0, stdout, stderr });
-      if (err.code === "ENOENT") return resolve({ code: null, stdout, stderr, failure: "missing", detail: err.message });
-      // Output past maxBuffer and an abort also kill the process, so they come before the timeout test.
-      if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-        return resolve({ code: null, stdout, stderr, failure: "error", detail: "the compiler's output is too large" });
-      }
-      if (err.code === "ABORT_ERR" || err.name === "AbortError") {
-        return resolve({ code: null, stdout, stderr, failure: "aborted", detail: err.message });
-      }
-      if (err.killed) return resolve({ code: null, stdout, stderr, failure: "timeout", detail: err.message });
-      if (typeof err.code === "number") return resolve({ code: err.code, stdout, stderr });
-      resolve({ code: null, stdout, stderr, failure: "error", detail: err.message });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    let stopped: Pick<RunResult, "failure" | "detail"> | undefined;
+    const maxBuffer = opts.maxBuffer ?? 16 * 1024 * 1024;
+    const text = (b: Buffer[]) => Buffer.concat(b).toString("utf8");
+    let timer: NodeJS.Timeout | undefined;
+    let grace: NodeJS.Timeout | undefined;
+    const onAbort = () => stop({ failure: "aborted", detail: "The operation was aborted" });
+
+    const finish = (r: RunResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (grace) clearTimeout(grace);
+      opts.signal?.removeEventListener("abort", onAbort);
+      resolve(r);
+    };
+    if (opts.signal?.aborted) return finish({ code: null, stdout: "", stderr: "", failure: "aborted", detail: "aborted before start" });
+
+    let child: ChildProcess;
+    try {
+      child = spawn(cmd, args, {
+        cwd: opts.cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32",
+      });
+    } catch (e) {
+      return finish({ code: null, stdout: "", stderr: "", failure: "error", detail: e instanceof Error ? e.message : String(e) });
+    }
+
+    function stop(why: Pick<RunResult, "failure" | "detail">): void {
+      if (stopped || settled) return;
+      stopped = why;
+      killTree(child);
+      // Output pipes a stray grandchild holds open must not keep the caller waiting.
+      grace = setTimeout(() => finish({ code: null, stdout: text(out), stderr: text(err), ...why }), KILL_GRACE_MS);
+    }
+
+    const collect = (into: Buffer[]) => (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBuffer) return stop({ failure: "error", detail: "the compiler's output is too large" });
+      into.push(chunk);
+    };
+    child.stdout?.on("data", collect(out));
+    child.stderr?.on("data", collect(err));
+    child.on("error", (e: NodeJS.ErrnoException) => {
+      if (e.code === "ENOENT") return finish({ code: null, stdout: "", stderr: "", failure: "missing", detail: e.message });
+      finish({ code: null, stdout: text(out), stderr: text(err), failure: "error", detail: e.message });
     });
+    child.on("close", (code, signal) => {
+      const r = { code: stopped ? null : code, stdout: text(out), stderr: text(err) };
+      if (stopped) return finish({ ...r, ...stopped });
+      if (code === null) return finish({ ...r, failure: "error", detail: `the compiler was stopped by ${signal ?? "a signal"}` });
+      finish(r);
+    });
+    timer = setTimeout(() => stop({ failure: "timeout", detail: `no answer within ${opts.timeoutMs} ms` }), opts.timeoutMs);
+    opts.signal?.addEventListener("abort", onAbort);
   });
 }
 

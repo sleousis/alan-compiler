@@ -8,7 +8,7 @@ import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } f
 import { compilerDiagnostics } from "../server/compilerCheck";
 import { CompilerProblems, Host, offerInstall, registerCommands, reportFailure, savedDocument, useWsl } from "./commands";
 import { findCompiler, forgetCompiler, runCompiler } from "./compiler";
-import { AlanDebugConfigurationProvider, DebugBuilds, DebugDeps, SavedSource } from "./debug";
+import { AlanDebugConfigurationProvider, DebugBuilds, DebugDeps, SavedSource, dynamicProvider } from "./debug";
 import { installedTag, isOlderTag, MIN_COMPILER } from "./installer";
 
 let client: LanguageClient | undefined;
@@ -80,9 +80,13 @@ function savedSource(host: Host, doc: vscode.TextDocument): SavedSource {
   };
 }
 
-/** Registers the alan debug type and removes each debug build when its session ends. */
+/**
+ * Registers the alan debug type. Each debug build goes when its session
+ * ends or never starts, and builds left by an earlier VS Code go now.
+ */
 function registerDebugging(host: Host): void {
-  const builds = new DebugBuilds();
+  const builds = new DebugBuilds(undefined, (line) => host.output.appendLine(line));
+  void builds.sweep();
   const deps: DebugDeps = {
     platform: process.platform,
     useWsl,
@@ -116,7 +120,11 @@ function registerDebugging(host: Host): void {
   const provider = new AlanDebugConfigurationProvider(deps);
   host.context.subscriptions.push(
     vscode.debug.registerDebugConfigurationProvider("alan", provider),
-    vscode.debug.registerDebugConfigurationProvider("alan", provider, vscode.DebugConfigurationProviderTriggerKind.Dynamic),
+    vscode.debug.registerDebugConfigurationProvider("alan", dynamicProvider(provider),
+      vscode.DebugConfigurationProviderTriggerKind.Dynamic),
+    vscode.debug.onDidStartDebugSession((session) => {
+      if (session.type === "lldb") builds.started(session.configuration.program);
+    }),
     vscode.debug.onDidTerminateDebugSession((session) => {
       if (session.type === "lldb") void builds.ended(session.configuration.program);
     }),

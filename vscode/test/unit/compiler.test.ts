@@ -4,7 +4,8 @@ import {
   WSL_LAUNCH,
 } from "../../src/client/compiler";
 import { toWslPath } from "../../src/client/wsl";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { checkFile, compilerDiagnostics } from "../../src/server/compilerCheck";
 
@@ -282,6 +283,61 @@ describe("runCompiler", () => {
     const r = await run;
     assert.equal(r.failure, "aborted");
     assert.ok(Date.now() - started < 4000);
+  });
+});
+
+describe("runCompiler stopping the compiler's children", () => {
+  const node = process.execPath;
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(path.join(os.tmpdir(), "alan-tree-")); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Starts a compiler stand-in whose own child writes its pid to a file, like alanc running zig. */
+  function startTree(opts: { timeoutMs: number; signal?: AbortSignal }) {
+    const pidFile = path.join(dir, "child.pid");
+    const grandchild = `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 30000)`;
+    // Node puts its own children in a Windows job that dies with it, which
+    // zig under alanc is not. detached keeps the child out of that job there.
+    const detached = process.platform === "win32";
+    const parent = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore", detached: ${detached} }); setTimeout(() => {}, 30000)`;
+    return { pidFile, run: runCompiler(node, ["-e", parent], opts) };
+  }
+
+  async function waitFor(test: () => boolean, ms: number): Promise<boolean> {
+    for (const end = Date.now() + ms; Date.now() < end;) {
+      if (test()) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return test();
+  }
+
+  it("leaves no child running after an abort", async () => {
+    const abort = new AbortController();
+    const { pidFile, run } = startTree({ timeoutMs: 20000, signal: abort.signal });
+    assert.ok(await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, "utf8") !== "", 8000), "the child started");
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(alive(pid));
+    abort.abort();
+    const r = await run;
+    assert.equal(r.failure, "aborted");
+    assert.ok(await waitFor(() => !alive(pid), 3000), "the child is gone");
+  });
+
+  it("leaves no child running after a timeout", async () => {
+    const { pidFile, run } = startTree({ timeoutMs: 3000 });
+    const r = await run;
+    assert.equal(r.failure, "timeout");
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(await waitFor(() => !alive(pid), 3000), "the child is gone");
   });
 });
 
