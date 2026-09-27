@@ -15,6 +15,14 @@ L [a-zA-Z]
 D [0-9]
 W [ \t\r]
 S [!|&<>()\[\]{},:+\-*%/;]
+H [0-9a-fA-F]
+/* The escape sequences of the spec's table 1. */
+E \\([ntr0\\'"]|x{H}{H})
+/* A common character: printable ASCII except ' " and \ (spec 1.1). */
+C [ !#-&(-\[\]-~]
+/* What a string may hold besides escapes: anything but the closing quote,
+   a backslash, the end of the line and NUL. */
+T [^"\\\n\0]
 
 %x comment
 %option stack
@@ -60,14 +68,20 @@ S [!|&<>()\[\]{},:+\-*%/;]
   }
 }
 
-\"(\\.|[^"\\])*\"		{
-  /* strdup would stop at a NUL byte and lose the closing quote. */
-  if (strlen(yytext) != (size_t) yyleng) yyerror("NUL character in string literal");
-  yylval.c = strdup(yytext);
-  return T_string;
+\"({T}|{E})*\"		{ yylval.c = strdup(yytext); return T_string; }
+ /* The longest match picks one of these when a string goes wrong. On a
+    tie the first one wins, so "a\" is reported as not closed. */
+\"({T}|{E})*		{ yyerror("String literal not closed on this line"); }
+\"({T}|{E})*\\[^\n]?	{
+  std::string msg = std::string("Invalid escape sequence \\") +
+                    (yytext[yyleng - 1] == '\\' ? "" : yytext + yyleng - 1) +
+                    " in string literal";
+  yyerror(msg.c_str());
 }
+\"({T}|{E})*\0		{ yyerror("NUL character in string literal"); }
 
-"\'"({L}|{D}|{S}|" "|"\\n"|"\\t"|"\\r"|"\\0"|"\\\\"|"\\\'"|"\\\""|"\\x"[0-9a-fA-F]{2})"\'" { yylval.c = strdup(yytext); return T_char; }
+\'({C}|{E})\'		{ yylval.c = strdup(yytext); return T_char; }
+\'			{ yyerror("Invalid character constant"); }
 
 {L}({L}|{D}|_)*     { yylval.c = strdup(yytext); return T_id; }
 {D}+     	 		{

@@ -1,0 +1,6 @@
+-- A string literal ends on the line where it starts (F10).
+main () : proc
+{
+  writeString("ab
+cd");
+}

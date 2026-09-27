@@ -1,0 +1,13 @@
+-- Every printable character except ' " and \ is a character constant,
+-- and the escapes of table 1 give the other three (F05, F14).
+main () : proc
+{
+  writeChar('.'); writeChar('?'); writeChar('='); writeChar('#');
+  writeChar('@'); writeChar('_'); writeChar('~'); writeChar('^');
+  writeChar('$'); writeChar('`'); writeChar('{'); writeChar('}');
+  writeChar('['); writeChar(']'); writeChar(' '); writeChar('a');
+  writeChar('Z'); writeChar('7'); writeChar('\''); writeChar('\"');
+  writeChar('\\'); writeChar('\t'); writeChar('|');
+  writeString("\n");
+  writeString("tab\there 'quote' \"dq\" back\\slash\x21\n");
+}

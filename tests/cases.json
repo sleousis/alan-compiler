@@ -208,20 +208,6 @@
     "expected": "regress/empty_int_function.txt"
   },
   {
-    "name": "long_expression",
-    "file": "tests/regress/long_expression.alan",
-    "input": null,
-    "opt": false,
-    "expected": "regress/long_expression.txt"
-  },
-  {
-    "name": "long_expression",
-    "file": "tests/regress/long_expression.alan",
-    "input": null,
-    "opt": true,
-    "expected": "regress/long_expression.txt"
-  },
-  {
     "name": "short_circuit",
     "file": "tests/regress/short_circuit.alan",
     "input": null,
@@ -388,5 +374,33 @@
     "input": null,
     "opt": true,
     "expected": "regress/reference_arguments.txt"
+  },
+  {
+    "name": "long_expression",
+    "file": "tests/regress/long_expression.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/long_expression.txt"
+  },
+  {
+    "name": "long_expression",
+    "file": "tests/regress/long_expression.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/long_expression.txt"
+  },
+  {
+    "name": "char_literals",
+    "file": "tests/regress/char_literals.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/char_literals.txt"
+  },
+  {
+    "name": "char_literals",
+    "file": "tests/regress/char_literals.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/char_literals.txt"
   }
 ]

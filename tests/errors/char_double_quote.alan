@@ -1,0 +1,5 @@
+-- A double quote in a character constant needs its escape (spec 1.1).
+main () : proc
+{
+  writeChar('"');
+}

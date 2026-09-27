@@ -1,0 +1,5 @@
+-- Only the escapes of table 1 are allowed in strings (F14).
+main () : proc
+{
+  writeString("a\qb\n");
+}

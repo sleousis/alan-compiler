@@ -16,5 +16,9 @@
   {"file": "tests/errors/int_constant_range.alan", "line": 5, "contains": "Integer constant 4294967297 is out of range (0 to 2147483647)"},
   {"file": "tests/errors/unknown_identifier.alan", "line": 6, "contains": "Identifier y not found"},
   {"file": "tests/errors/proc_return_value.alan", "line": 6, "contains": "Function q is a proc, so its return cannot have a value"},
-  {"file": "tests/errors/array_value_param.alan", "line": 3, "contains": "array must be a reference parameter"}
+  {"file": "tests/errors/array_value_param.alan", "line": 3, "contains": "array must be a reference parameter"},
+  {"file": "tests/errors/string_two_lines.alan", "line": 4, "contains": "String literal not closed on this line"},
+  {"file": "tests/errors/string_bad_escape.alan", "line": 4, "contains": "Invalid escape sequence \\q in string literal"},
+  {"file": "tests/errors/char_bad_escape.alan", "line": 4, "contains": "Invalid character constant"},
+  {"file": "tests/errors/char_double_quote.alan", "line": 4, "contains": "Invalid character constant"}
 ]
