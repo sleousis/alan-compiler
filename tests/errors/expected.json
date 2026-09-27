@@ -3,5 +3,6 @@
   {"file": "tests/errors/undeclared.alan", "line": 3, "contains": "error:"},
   {"file": "tests/errors/after_comment.alan", "line": 5, "contains": "error:"},
   {"file": "tests/errors/unterminated_comment.alan", "line": 5, "contains": "Unterminated comment"},
-  {"file": "Examples/test2", "line": null, "contains": "error:"}
+  {"file": "Examples/test2", "line": null, "contains": "error:"},
+  {"file": "tests/errors/nul_in_string.alan", "line": 4, "contains": "NUL character in string literal"}
 ]

@@ -107,18 +107,13 @@ ast ast_const (int n, Type_T t, int line) {
 }
 
 ast ast_ch_str_bool (char *c, kind op, Type_T t, int line) {
-	if (op != BOOL) {
-		char* substr = (char*)calloc(strlen(c)-1, 1);
-		strncpy(substr, c+1, strlen(c)-2);
-		return ast_make(op, substr, 0, NULL, NULL, t, line);
-	}  if (op != BOOL) {
-		char* substr = (char*)calloc(strlen(c)-1, 1);
-		strncpy(substr, c+1, strlen(c)-2);
-		return ast_make(op, substr, 0, NULL, NULL, t, line);
-	}
-	else{
-		return ast_make(op, c, 0, NULL, NULL, t, line);
-	}
+	if (op == BOOL) return ast_make(op, c, 0, NULL, NULL, t, line);
+	// Drop the quotes around a character or string literal. The lexer
+	// only gives literals with both quotes, so c has at least 2 bytes.
+	size_t len = strlen(c);
+	char* inner = (char*)calloc(len - 1, 1);
+	memcpy(inner, c + 1, len - 2);
+	return ast_make(op, inner, 0, NULL, NULL, t, line);
 }
 
 ast ast_param (char *c, kind op, ast l, int line) {
@@ -335,9 +330,8 @@ Constant *createFunction(char* name, Type* retType) {
 }
 
 bool FuncDefLockEnabled = true;
-bool isVariable = true;
-bool retEnabled = false;
-BasicBlock *globalBB;
+// Set when a generated function fails verification.
+static bool codegenFailed = false;
 
 // The source line a statement starts on, or 0 for other nodes. The parser
 // gives if and while the line where their body ends, so use the condition's.
@@ -350,9 +344,60 @@ static int statementLine (ast t) {
 	}
 }
 
+// The result type node of a function definition: TYPE or PROC. The parser
+// gives a SEQ of it and the rest, or the node alone when the function has
+// no local definitions and an empty body.
+static ast resultTypeNode (ast t) {
+	return t->right->k == SEQ ? t->right->left : t->right;
+}
+
 // The line a function is declared on: the line of its result type.
 static int functionLine (ast t) {
-	return t->right->k == SEQ ? t->right->left->line : t->right->line;
+	return resultTypeNode(t)->line;
+}
+
+// True while the current block has no terminator, so code can still go
+// into it. After a return the rest of a block is dead.
+static bool blockOpen () {
+	// getTerminator() cannot be used: it expects a block that is not empty.
+	BasicBlock *BB = Builder.GetInsertBlock();
+	return BB->empty() || !BB->back().isTerminator();
+}
+
+// Compiles an expression and gives its value. Names and array elements
+// compile to the address of their object, so load from it.
+static Value *rvalue (ast t) {
+	Value *v = ast_compile(t);
+	if (t->k == ID || t->k == ARREXPR) return loadValue(v);
+	return v;
+}
+
+static bool isArithmetic (kind k) {
+	return k == PLUS || k == MINUS || k == TIMES || k == DIV || k == MOD;
+}
+
+// Compiles a chain of arithmetic operators such as a + b - c * d. The
+// parser nests left-associative operators on the left, so walk that side
+// in a loop. Recursion there overflows the stack on long expressions.
+static Value *compileArithmetic (ast t) {
+	std::vector<ast> chain;
+	ast first = t;
+	while (isArithmetic(first->k)) {
+		chain.push_back(first);
+		first = first->left;
+	}
+	Value *acc = rvalue(first);
+	for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+		Value *r = rvalue((*it)->right);
+		switch ((*it)->k) {
+		case PLUS: acc = Builder.CreateAdd(acc, r, "addtmp"); break;
+		case MINUS: acc = Builder.CreateSub(acc, r, "subtmp"); break;
+		case TIMES: acc = Builder.CreateMul(acc, r, "multmp"); break;
+		case DIV: acc = Builder.CreateSDiv(acc, r, "divtmp"); break;
+		default: acc = Builder.CreateSRem(acc, r, "modtmp"); break;
+		}
+	}
+	return acc;
 }
 
 Value * ast_compile (ast t) {
@@ -360,47 +405,26 @@ Value * ast_compile (ast t) {
 	if (DI && statementLine(t) > 0) di_location(DI, Builder, statementLine(t));
 	switch (t->k) {
 	case WHILE: {
-		// Emit the number of iterations.
-		Value *n = ast_compile(t->left);
-		// Make the new basic block for the loop.
 		Function *TheFunction = Builder.GetInsertBlock()->getParent();
-		BasicBlock *PreheaderBB = Builder.GetInsertBlock();
 		BasicBlock *LoopBB = BasicBlock::Create(TheContext, "loop", TheFunction);
-		// Insert an explicit fall-through from the current block.
-		if (!retEnabled) Builder.CreateBr(LoopBB);
-		else retEnabled = false;
-		// Start insertion in the loop.
+		BasicBlock *InsideBB = BasicBlock::Create(TheContext, "inside", TheFunction);
+		BasicBlock *AfterBB = BasicBlock::Create(TheContext, "after", TheFunction);
+		Builder.CreateBr(LoopBB);
+		// The condition is evaluated before every iteration.
 		Builder.SetInsertPoint(LoopBB);
-		// Create the phi node and start it with the number of iterations.
-		PHINode *phi_iter = Builder.CreatePHI(i1, 0, "iter");
-		phi_iter->addIncoming(n, PreheaderBB);
-		// Create the end loop condition.
-		Value *cond = Builder.CreateICmpEQ(phi_iter, c1(1), "loop_cond");
-		// Create the "after loop" block.
-		BasicBlock *InsideBB =
-			BasicBlock::Create(TheContext, "inside", TheFunction);
-		BasicBlock *AfterBB =
-			BasicBlock::Create(TheContext, "after", TheFunction);
+		Value *cond = ast_compile(t->left);
 		Builder.CreateCondBr(cond, InsideBB, AfterBB);
 		Builder.SetInsertPoint(InsideBB);
-		globalBB = InsideBB;
-		// Emit the body of the loop.
 		ast_compile(t->right);
-		// Decrease the number of iterations.
-		if (DI) di_location(DI, Builder, statementLine(t));
-		Value *newCond = ast_compile(t->left);
-		// Loop back.
-		phi_iter->addIncoming(newCond, Builder.GetInsertBlock());
-		if (!retEnabled) Builder.CreateBr(LoopBB);
-		else retEnabled = false;
-		// End of loop.
+		if (blockOpen()) {
+			if (DI) di_location(DI, Builder, statementLine(t));
+			Builder.CreateBr(LoopBB);
+		}
 		Builder.SetInsertPoint(AfterBB);
-		globalBB = AfterBB;
 		return nullptr;
 	}
 	case IF: {
-		Value *v = ast_compile(t->left);
-		Value *cond = Builder.CreateICmpNE(v, c1(0), "if_cond");
+		Value *cond = ast_compile(t->left);
 		Function *TheFunction = Builder.GetInsertBlock()->getParent();
 		BasicBlock *InsideBB =
 			BasicBlock::Create(TheContext, "then", TheFunction);
@@ -408,17 +432,13 @@ Value * ast_compile (ast t) {
 			BasicBlock::Create(TheContext, "endif", TheFunction);
 		Builder.CreateCondBr(cond, InsideBB, AfterBB);
 		Builder.SetInsertPoint(InsideBB);
-		globalBB = InsideBB;
 		ast_compile(t->right);
-		if (!retEnabled) Builder.CreateBr(AfterBB);
-		else retEnabled = false;
+		if (blockOpen()) Builder.CreateBr(AfterBB);
 		Builder.SetInsertPoint(AfterBB);
-		globalBB = AfterBB;
 		return nullptr;
 	}
 	case IFELSE: {
-		Value *v = ast_compile(t->left->left);
-		Value *cond = Builder.CreateICmpNE(v, c1(0), "if_cond");
+		Value *cond = ast_compile(t->left->left);
 		Function *TheFunction = Builder.GetInsertBlock()->getParent();
 		BasicBlock *InsideBB =
 			BasicBlock::Create(TheContext, "then", TheFunction);
@@ -428,33 +448,28 @@ Value * ast_compile (ast t) {
 			BasicBlock::Create(TheContext, "endifelse", TheFunction);
 		Builder.CreateCondBr(cond, InsideBB, ElseInsideBB);
 		Builder.SetInsertPoint(InsideBB);
-		globalBB = InsideBB;
 		ast_compile(t->left->right);
-		if (!retEnabled) Builder.CreateBr(AfterBB);
-		else retEnabled = false;
+		if (blockOpen()) Builder.CreateBr(AfterBB);
 		Builder.SetInsertPoint(ElseInsideBB);
-		globalBB = ElseInsideBB;
 		ast_compile(t->right);
-		if (!retEnabled) Builder.CreateBr(AfterBB);
-		else retEnabled = false;
+		if (blockOpen()) Builder.CreateBr(AfterBB);
 		Builder.SetInsertPoint(AfterBB);
-		globalBB = AfterBB;
 		return nullptr;
 	}
 	case SEQ: {
-		ast_compile(t->left);
-		// Statements after a return are dead. Emitting them would put
-		// instructions after the ret terminator and fail verification.
-		if (!retEnabled) ast_compile(t->right);
+		// A statement list nests on the right. Walk it in a loop, so long
+		// lists do not use up the stack. Statements after a return are
+		// dead: emitting them would put code after the ret terminator.
+		for (; t != nullptr && t->k == SEQ && blockOpen(); t = t->right)
+			ast_compile(t->left);
+		if (t != nullptr && blockOpen()) ast_compile(t);
 		return nullptr;
 	}
 	case RET: {
-		Value *l_value;
-		Value *l = ast_compile(t->left);
-		if (isVariable) l_value = loadValue(l);
-		else l_value = l;
-		retEnabled = true;
-		return Builder.CreateRet(l_value);
+		// "return;" in a proc has the proc's TYPE node as its operand.
+		if (t->left->k == TYPE) Builder.CreateRetVoid();
+		else Builder.CreateRet(rvalue(t->left));
+		return nullptr;
 	}
 	case PAR: {
 		struct parameterStruct *tmpFunParameter = new struct parameterStruct ();
@@ -533,25 +548,16 @@ Value * ast_compile (ast t) {
 		return nullptr;
 	}
 	case ASS: {
-		Value *r_value;
-		Value *r = ast_compile(t->right);
-		if (isVariable) r_value = loadValue(r);
-		else r_value = r;
+		Value *r_value = rvalue(t->right);
 		Value *l = ast_compile(t->left);
 		Builder.CreateStore(r_value,l);
 		return nullptr;
 	}
 	case ARREXPR: {
-		Value *r_value;
-		Value *r = ast_compile(t->right);
-		if (isVariable) r_value = loadValue(r);
-		else r_value = r;
+		Value *index = rvalue(t->right);
 		Value *l = ast_compile(t->left);
-		Type *arrType = PointeeTypes[l];
-		Value *tmpArr = trackPtr(Builder.CreateGEP(arrType, l, std::vector<Value *>{ c32(0), r_value }, "tmpArr"),
-		                         arrType->getArrayElementType());
-		isVariable = true;
-		return tmpArr;
+		Type *elemType = PointeeTypes[l]->getArrayElementType();
+		return trackPtr(Builder.CreateGEP(elemType, l, index, "tmpArr"), elemType);
 	}
 	case FUNCALL: {
 		bool isInLibrary = false;
@@ -560,102 +566,26 @@ Value * ast_compile (ast t) {
 			tmp = findFunctionInLibrary(t->id);
 			if (tmp == NULL) {
 				error_prefix(t->line);
-				error("Function \033[1;36m%s\033[0m not in scope.", t->id);
+				error("Function [1;36m%s[0m not in scope.", t->id);
 			}
 			isInLibrary = true;
 		}
-		//get args
 		std::vector<Value*> Args;
-		//pass in-scope variables
+		// Pass the variables of the enclosing functions that the callee can see.
 		if (!isInLibrary) {
-			for (size_t i = 0; i < tmp->funHiddenParameters.size(); i++) {
-				if (tmp->funHiddenParameters[i]->isArray) {
-					Instruction *result = new BitCastInst(currentFunction->NamedValues[tmp->funHiddenParameters[i]->parName],
-					                                      llvm::PointerType::getUnqual(TheContext),
-					                                      "castedArr", globalBB);
-					Args.push_back(result);
-				}
-				else Args.push_back(currentFunction->NamedValues[tmp->funHiddenParameters[i]->parName]);
-			}
+			for (size_t i = 0; i < tmp->funHiddenParameters.size(); i++)
+				Args.push_back(currentFunction->NamedValues[tmp->funHiddenParameters[i]->parName]);
 		}
-		//1 or more parameters
-		if (t->left != NULL) {
-			Value *l, *v;
-			//1 parameter
-			if (t->left->k != SEQ) {
-				l = ast_compile(t->left);
-				if (!tmp->funParameters[0]->isRef) {
-					if (isVariable) v = loadValue(l);
-					else v = l;
-				}
-				else {
-					if (tmp->funParameters[0]->isArray) {
-						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(TheContext),
-						                                      "castedArr", globalBB);
-						v = result;
-					}
-					else v = l;
-				}
-				Args.push_back(v);
-			}
-			//2 or more parameters
-			else {
-				ast iter = t->left;
-				int i = 0;
-				while (iter->right->k == SEQ) {
-					l = ast_compile(iter->left);
-					if (!tmp->funParameters[i]->isRef) {
-						if (isVariable) v = loadValue(l);
-						else v = l;
-					}
-					else {
-						if (tmp->funParameters[i]->isArray) {
-							Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(TheContext),
-							                                      "castedArr", globalBB);
-							v = result;
-						}
-						else v = l;
-					}
-					Args.push_back(v);
-					i++;
-					iter = iter->right;
-				}
-				l = ast_compile(iter->left);
-				if (!tmp->funParameters[i]->isRef) {
-					if (isVariable) v = loadValue(l);
-					else v = l;
-				}
-				else {
-					if (tmp->funParameters[i]->isArray) {
-						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(TheContext),
-						                                      "castedArr", globalBB);
-						v = result;
-					}
-					else v = l;
-				}
-				Args.push_back(v);
-				i++;
-				l = ast_compile(iter->right);
-				if (!tmp->funParameters[i]->isRef) {
-					if (isVariable) v = loadValue(l);
-					else v = l;
-				}
-				else {
-					if (tmp->funParameters[i]->isArray) {
-						Instruction *result = new BitCastInst(l, llvm::PointerType::getUnqual(TheContext),
-						                                      "castedArr", globalBB);
-						v = result;
-					}
-					else v = l;
-				}
-				Args.push_back(v);
-				i++;
-			}
+		// The arguments nest on the right: SEQ(a, SEQ(b, c)).
+		ast iter = t->left;
+		for (size_t i = 0; iter != NULL; i++) {
+			ast arg = iter->k == SEQ ? iter->left : iter;
+			iter = iter->k == SEQ ? iter->right : NULL;
+			// A reference parameter gets the address of the l-value.
+			if (tmp->funParameters[i]->isRef) Args.push_back(ast_compile(arg));
+			else Args.push_back(rvalue(arg));
 		}
-		//make call
-		Value *retVal = Builder.CreateCall(tmp->func, Args);
-		isVariable = false;
-		return retVal;
+		return Builder.CreateCall(tmp->func, Args);
 	}
 	case FUNCDEF: {
 		if (!FuncDefLockEnabled) {
@@ -664,7 +594,6 @@ Value * ast_compile (ast t) {
 			currentFunction = findFunction(t->id);
 			BasicBlock *BB = BasicBlock::Create(TheContext, "entry", currentFunction->func);
 			Builder.SetInsertPoint(BB);
-			globalBB = BB;
 			if (DI) {
 				std::vector<std::pair<std::string, Type *>> params;
 				for (parameterStruct *p : currentFunction->funParameters)
@@ -676,13 +605,9 @@ Value * ast_compile (ast t) {
 			Function::arg_iterator argss = currentFunction->func->arg_begin();
 			for (size_t i = 0; i < currentFunction->funHiddenParameters.size(); i++) {
 				Value *tmpArg = argss++;
-				if (currentFunction->funHiddenParameters[i]->isArray) {
-					Instruction *result = new BitCastInst(tmpArg,
-					                                      llvm::PointerType::getUnqual(TheContext),
-					                                      "backCastedArr", globalBB);
+				if (currentFunction->funHiddenParameters[i]->isArray)
 					currentFunction->NamedValues[currentFunction->funHiddenParameters[i]->parName] =
-						trackPtr(result, ArrayType::get(currentFunction->funHiddenParameters[i]->parType,1));
-				}
+						trackPtr(tmpArg, ArrayType::get(currentFunction->funHiddenParameters[i]->parType,1));
 				else currentFunction->NamedValues[currentFunction->funHiddenParameters[i]->parName] =
 					trackPtr(tmpArg, currentFunction->funHiddenParameters[i]->parType);
 				struct variableStruct *vartmp = new struct variableStruct ();
@@ -710,13 +635,9 @@ Value * ast_compile (ast t) {
 					}
 				}
 				else {
-					if (currentFunction->funParameters[i]->isArray) {
-						Instruction *result = new BitCastInst(tmpArg,
-						                                      llvm::PointerType::getUnqual(TheContext),
-						                                      "backCastedArr", globalBB);
+					if (currentFunction->funParameters[i]->isArray)
 						currentFunction->NamedValues[currentFunction->funParameters[i]->parName] =
-							trackPtr(result, ArrayType::get(currentFunction->funParameters[i]->parTypePure,1));
-					}
+							trackPtr(tmpArg, ArrayType::get(currentFunction->funParameters[i]->parTypePure,1));
 					else currentFunction->NamedValues[currentFunction->funParameters[i]->parName] =
 						trackPtr(tmpArg, currentFunction->funParameters[i]->parTypePure);
 					struct variableStruct *vartmp = new struct variableStruct ();
@@ -738,13 +659,18 @@ Value * ast_compile (ast t) {
 			}
 			//Emit the program code.
 			ast_compile(t->right);
-			if (!retEnabled && (t->right->k == PROC || t->right->left->k == PROC)) Builder.CreateRetVoid();
-			else if (!retEnabled && t->right->left->type->kind == Type_tag::TYPE_INTEGER) Builder.CreateRet(c32(0));
-			else if (!retEnabled && t->right->left->type->kind == Type_tag::TYPE_CHAR) Builder.CreateRet(c8(0));
-			retEnabled = false;
-			if (opt) {
-				TheFPM->run(*currentFunction->func, *TheFAM);
+			// Falling off the end returns 0 from a function with a result.
+			if (blockOpen()) {
+				ast result = resultTypeNode(t);
+				if (result->k == PROC) Builder.CreateRetVoid();
+				else if (result->type->kind == Type_tag::TYPE_CHAR) Builder.CreateRet(c8(0));
+				else Builder.CreateRet(c32(0));
 			}
+			// The passes assume valid IR and can crash on anything else, so
+			// they run only on a function that verifies. Invalid IR fails
+			// the module's verification in llvm_compile.
+			if (verifyFunction(*currentFunction->func, &errs())) codegenFailed = true;
+			else if (opt) TheFPM->run(*currentFunction->func, *TheFAM);
 			//Disable funcDef lock
 			FuncDefLockEnabled = false;
 			//define dismissed funcDefs
@@ -779,20 +705,10 @@ Value * ast_compile (ast t) {
 			//get function's parameters
 			ast_compile(t->left);
 			//define function type
-			if (t->right->k == SEQ) {
-				if (t->right->left->k == PROC) c = createFunction(t->id, Type::getVoidTy(TheContext));
-				else {
-					if (t->right->left->type->kind == Type_tag::TYPE_INTEGER) c = createFunction(t->id, i32);
-					else if (t->right->left->type->kind == Type_tag::TYPE_CHAR) c = createFunction(t->id, i8);
-				}
-			}
-			else {
-				if (t->right->k == PROC) c = createFunction(t->id, Type::getVoidTy(TheContext));
-				else {
-					if (t->right->type->kind == Type_tag::TYPE_INTEGER) c = createFunction(t->id, i32);
-					else if (t->right->type->kind == Type_tag::TYPE_CHAR) c = createFunction(t->id, i8);
-				}
-			}
+			ast result = resultTypeNode(t);
+			if (result->k == PROC) c = createFunction(t->id, Type::getVoidTy(TheContext));
+			else if (result->type->kind == Type_tag::TYPE_CHAR) c = createFunction(t->id, i8);
+			else c = createFunction(t->id, i32);
 			currentFunction->func = cast<Function>(c);
 			functionTable *firstFunction = currentFunction;
 			currentFunction = currentFunction->father;
@@ -814,16 +730,12 @@ Value * ast_compile (ast t) {
 			error_prefix(t->line);
 			error("Variable \033[1;36m%s\033[0m not in scope.", t->id);
 		}
-		Value *v = currentFunction->NamedValues[t->id];
-		isVariable = true;
-		return v;
+		return currentFunction->NamedValues[t->id];
 	}
 	case CONST: {
-		isVariable = false;
 		return c32(t->num);
 	}
 	case CHAR: {
-		isVariable = false;
 		char* s = t->id;
 		char c;
 		if (s[0] == '\\' && strlen(s) > 1) {
@@ -842,7 +754,6 @@ Value * ast_compile (ast t) {
 		return c8(c);
 	}
 	case STRING: {
-		isVariable = false;
 		const char* s = t->id;
 		size_t len = strlen(s);
 		char* sNew = (char*) malloc(sizeof(char)*(len+1));
@@ -877,162 +788,28 @@ Value * ast_compile (ast t) {
 		return newString;
 	}
 	case BOOL: {
-		printf("%s\n", t->id);
-		if (strcmp(t->id,"true") == 0) return c1(1);
-		if (strcmp(t->id,"false") == 0) return c1(0);
-		return nullptr;
+		return c1(strcmp(t->id, "true") == 0);
 	}
-	case PLUS: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateAdd(v1, v2, "addtmp");
+	case PLUS: case MINUS: case TIMES: case DIV: case MOD:
+		return compileArithmetic(t);
+	case EQUALS: case NOTEQUALS: case LESSEQUALS: case GREATEQUALS: case GREATER: case LESS: {
+		Value *v1 = rvalue(t->left);
+		Value *v2 = rvalue(t->right);
+		switch (t->k) {
+		case EQUALS: return Builder.CreateICmpEQ(v1, v2, "equalstmp");
+		case NOTEQUALS: return Builder.CreateICmpNE(v1, v2, "notequalstmp");
+		case LESSEQUALS: return Builder.CreateICmpSLE(v1, v2, "lessequalstmp");
+		case GREATEQUALS: return Builder.CreateICmpSGE(v1, v2, "greatequalstmp");
+		case GREATER: return Builder.CreateICmpSGT(v1, v2, "greatertmp");
+		default: return Builder.CreateICmpSLT(v1, v2, "lesstmp");
+		}
 	}
-	case MINUS: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateSub(v1, v2, "subtmp");
-	}
-	case TIMES: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateMul(v1, v2, "multmp");
-	}
-	case DIV: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateSDiv(v1, v2, "divtmp");
-	}
-	case MOD: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateSRem(v1, v2, "modtmp");
-	}
-	case EQUALS: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateICmpEQ(v1, v2, "equalstmp");
-	}
-	case NOTEQUALS: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateICmpNE(v1, v2, "notequalstmp");
-	}
-	case LESSEQUALS: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateICmpSLE(v1, v2, "lessequalstmp");
-	}
-	case GREATEQUALS: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateICmpSGE(v1, v2, "greatequalstmp");
-	}
-	case GREATER: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateICmpSGT(v1, v2, "greatertmp");
-	}
-	case LESS: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateICmpSLT(v1, v2, "lesstmp");
-	}
-	case NOT: {
-		Value *v;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v = loadValue(l);
-		else v = l;
-		isVariable = false;
-		return Builder.CreateNot(v, "nottmp");
-	}
-	case AND: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateAnd(v1, v2, "andtmp");
-	}
-	case OR: {
-		Value *v1, *v2;
-		Value *l = ast_compile(t->left);
-		if (isVariable) v1 = loadValue(l);
-		else v1 = l;
-		Value *r = ast_compile(t->right);
-		if (isVariable) v2 = loadValue(r);
-		else v2 = r;
-		isVariable = false;
-		return Builder.CreateOr(v1, v2, "ortmp");
-	}
+	case NOT:
+		return Builder.CreateNot(ast_compile(t->left), "nottmp");
+	case AND:
+		return Builder.CreateAnd(ast_compile(t->left), ast_compile(t->right), "andtmp");
+	case OR:
+		return Builder.CreateOr(ast_compile(t->left), ast_compile(t->right), "ortmp");
 	default: {}
 	}
 	return nullptr;
@@ -1238,7 +1015,7 @@ bool llvm_compile (ast t, const char *debugFile) {
 	di_finish(DI);
 	DI = nullptr;
 	// Verify and optimize the main function.
-	bool bad = verifyModule(*TheModule, &errs());
+	bool bad = verifyModule(*TheModule, &errs()) || codegenFailed;
 	if (bad) {
 		fprintf(stderr, "The faulty IR is:\n");
 		fprintf(stderr, "------------------------------------------------\n\n");
@@ -1335,8 +1112,11 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 			}
 		}
 		else {
+			// A statement list nests on the right, so walk it in a loop.
 			*retType = ast_sem(t->left, f);
-			ast_sem(t->right, f);
+			for (t = t->right; t != NULL && t->k == SEQ; t = t->right)
+				ast_sem(t->left, f);
+			ast_sem(t, f);
 			return *retType;
 		}
 	}
@@ -1471,8 +1251,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		openScope();
 		SymbolEntry *theFunction = newFunction(t->id);
 		ast_sem(t->left, theFunction);
-		theFunction->u.eFunction.resultType = ast_sem(t->right->left,NULL);
-		endFunctionHeader(theFunction, ast_sem(t->right, theFunction));
+		Type_T resultType = ast_sem(resultTypeNode(t),NULL);
+		theFunction->u.eFunction.resultType = resultType;
+		ast_sem(t->right, theFunction);
+		endFunctionHeader(theFunction, resultType);
 		closeScope();
 		if (currentScope != NULL) {
 			insertEntry(theFunction);
@@ -1524,78 +1306,35 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 	}
 	case BOOL: {
 		//printf("%s: %s\n",kinds[t->k] ,t->id);
+		// true and false are literals, not names, so they get no symbol
+		// table entry. One entry per use gave "Duplicate identifier".
 		t->type = typeBoolean;
-		newConstant(t->id,t->type);
 		return t->type;
 	}
-	case PLUS: {
-		//printf("%s: +\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in + operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in + operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
+	case PLUS: case MINUS: case TIMES: case DIV: case MOD: {
+		// Walk the left side of a chain such as a + b - c in a loop, as
+		// ast_compile does, so long expressions do not use up the stack.
+		std::vector<ast> chain;
+		ast first = t;
+		while (isArithmetic(first->k)) {
+			chain.push_back(first);
+			first = first->left;
 		}
-		else t->type = t->left->type;
-		return t->type;
-	}
-	case MINUS: {
-		//printf("%s: -\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in - operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in - operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
+		ast_sem(first,f);
+		for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+			ast op = *it;
+			const char *name = op->k == PLUS ? "+" : op->k == MINUS ? "-" : op->k == TIMES ? "*" : op->k == DIV ? "/" : "%";
+			linecount = op->line;
+			ast_sem(op->right,f);
+			if (op->left->type->isArray == 1 || op->right->type->isArray == 1)
+			{ error_prefix(op->line);
+			  error("type mismatch in %s operator (can't use array in expression).", name);}
+			if (!equalType(op->left->type, op->right->type)) {
+				error_prefix(op->line);
+				error("type mismatch in %s operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",name,types[op->left->type->kind],types[op->right->type->kind]);
+			}
+			op->type = op->left->type;
 		}
-		else t->type = t->left->type;
-		return t->type;
-	}
-	case TIMES: {
-		//printf("%s: *\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in * operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in * operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
-		else t->type = t->left->type;
-		return t->type;
-	}
-	case DIV: {
-		//printf("%s: /\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in / operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in / operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
-		else t->type = t->left->type;
-		return t->type;
-	}
-	case MOD: {
-		//printf("%s: %%\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in % operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in % operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
-		else t->type = t->left->type;
 		return t->type;
 	}
 	case EQUALS: {
@@ -1679,8 +1418,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 	case NOT: {
 		//printf("%s: !\n",kinds[t->k]);
 		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (!equalType(t->right->type, typeBoolean))
+		if (!equalType(t->left->type, typeBoolean))
 		{ error_prefix(t->line);
 		  error("type mismatch in ! operator.");}
 		return t->type;

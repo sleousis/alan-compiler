@@ -1,0 +1,10 @@
+-- The ! operator on conditions (C4).
+main () : proc
+  x : int;
+{
+  x = 3;
+  if (!(1 == 2)) writeString("ok\n");
+  if (!(x == 3)) writeString("wrong\n"); else writeString("not\n");
+  if (!!(x > 2)) writeString("twice\n");
+  if (!false) writeString("false\n");
+}

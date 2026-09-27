@@ -1,0 +1,25 @@
+-- A return inside a while body ends the function (C1, I2).
+main () : proc
+  f (n : int) : int
+  {
+    while (n > 0) {
+      n = n - 1;
+      return n;
+    }
+    return 99;
+  }
+  g (n : int) : int
+  {
+    while (true) {
+      if (n == 0) return 7;
+      n = n - 1;
+    }
+  }
+{
+  writeInteger(f(5));
+  writeString("\n");
+  writeInteger(f(0));
+  writeString("\n");
+  writeInteger(g(3));
+  writeString("\n");
+}

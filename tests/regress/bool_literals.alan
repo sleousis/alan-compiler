@@ -1,0 +1,11 @@
+-- true and false in conditions, also after an assignment (C3).
+main () : proc
+  x : int;
+{
+  x = 1;
+  if (true & x == 1) writeString("a\n");
+  if (true) writeString("t\n");
+  while (false) writeString("never\n");
+  if (false | x == 1) writeString("b\n");
+  if (false) writeString("never\n"); else writeString("c\n");
+}

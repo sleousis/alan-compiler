@@ -4,6 +4,11 @@ Each entry in `cases.json` names an example, its input file and whether it is bu
 The expected output of each case is in `expected/`.
 It was recorded with the legacy pipeline (`./alan`, LLVM 23 and the assembly runtime).
 
+The programs in `regress/` test fixed compiler bugs.
+Their expected output (`regress/<name>.txt`) was written by hand from the language spec.
+Each one is a case twice, with and without `-O`, and its entry names the file in `expected`.
+Programs that must fail to compile are in `errors/`, checked by `run_errors.py`.
+
 Run the cases against a compiler:
 
 ```

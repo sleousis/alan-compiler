@@ -1,0 +1,12 @@
+-- An int function with no locals and an empty body returns 0 (F02).
+main () : proc
+  f () : int {}
+  g () : byte {}
+  p () : proc {}
+{
+  writeInteger(f());
+  writeString("\n");
+  writeByte(g());
+  writeString("\n");
+  p();
+}

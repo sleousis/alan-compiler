@@ -136,5 +136,89 @@
     "file": "tests/comments/comments.alan",
     "input": null,
     "opt": true
+  },
+  {
+    "name": "return_in_while",
+    "file": "tests/regress/return_in_while.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/return_in_while.txt"
+  },
+  {
+    "name": "return_in_while",
+    "file": "tests/regress/return_in_while.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/return_in_while.txt"
+  },
+  {
+    "name": "return_in_proc",
+    "file": "tests/regress/return_in_proc.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/return_in_proc.txt"
+  },
+  {
+    "name": "return_in_proc",
+    "file": "tests/regress/return_in_proc.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/return_in_proc.txt"
+  },
+  {
+    "name": "bool_literals",
+    "file": "tests/regress/bool_literals.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/bool_literals.txt"
+  },
+  {
+    "name": "bool_literals",
+    "file": "tests/regress/bool_literals.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/bool_literals.txt"
+  },
+  {
+    "name": "not_operator",
+    "file": "tests/regress/not_operator.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/not_operator.txt"
+  },
+  {
+    "name": "not_operator",
+    "file": "tests/regress/not_operator.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/not_operator.txt"
+  },
+  {
+    "name": "empty_int_function",
+    "file": "tests/regress/empty_int_function.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/empty_int_function.txt"
+  },
+  {
+    "name": "empty_int_function",
+    "file": "tests/regress/empty_int_function.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/empty_int_function.txt"
+  },
+  {
+    "name": "long_expression",
+    "file": "tests/regress/long_expression.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/long_expression.txt"
+  },
+  {
+    "name": "long_expression",
+    "file": "tests/regress/long_expression.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/long_expression.txt"
   }
 ]

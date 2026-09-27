@@ -59,7 +59,12 @@ S [!|&<>()\[\]{},:+\-*%/;]
   }
 }
 
-\"(\\.|[^"\\])*\"		{ yylval.c = strdup(yytext); return T_string; }
+\"(\\.|[^"\\])*\"		{
+  /* strdup would stop at a NUL byte and lose the closing quote. */
+  if (strlen(yytext) != (size_t) yyleng) yyerror("NUL character in string literal");
+  yylval.c = strdup(yytext);
+  return T_string;
+}
 
 "\'"({L}|{D}|{S}|" "|"\\n"|"\\t"|"\\r"|"\\0"|"\\\\"|"\\\'"|"\\\""|"\\x"({D}|[a-f]){2})"\'" { yylval.c = strdup(yytext); return T_char; }
 

@@ -1,0 +1,25 @@
+-- "return;" ends a proc (C2).
+main () : proc
+  x : int;
+  p () : proc
+  {
+    x = 1;
+    return;
+    x = 2;
+  }
+  q (n : int) : proc
+  {
+    if (n > 0) return;
+    x = x + 10;
+  }
+{
+  p();
+  writeInteger(x);
+  writeString("\n");
+  q(1);
+  writeInteger(x);
+  writeString("\n");
+  q(0);
+  writeInteger(x);
+  writeString("\n");
+}

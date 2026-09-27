@@ -27,13 +27,15 @@ def main() -> int:
         cmd = [a.alanc, "run", str(source(c["file"]))] + (["-O"] if c["opt"] else [])
         stdin = (ROOT / "tests" / c["input"]).read_bytes() if c["input"] else b""
         r = subprocess.run(cmd, input=stdin, capture_output=True, timeout=120)
-        want = normalize((ROOT / "tests/expected" / (c["name"] + ".txt")).read_bytes())
+        expected = c.get("expected") or "expected/" + c["name"] + ".txt"
+        want = normalize((ROOT / "tests" / expected).read_bytes())
         got = normalize(r.stdout)
+        label = c["name"] + (" -O" if c["opt"] else "")
         if r.returncode == 0 and got == want:
-            print("PASS", c["name"])
+            print("PASS", label)
         else:
             failed += 1
-            print("FAIL", c["name"], "exit", r.returncode)
+            print("FAIL", label, "exit", r.returncode)
             sys.stdout.write(r.stderr.decode("latin-1"))
             sys.stdout.writelines(difflib.unified_diff(
                 want.splitlines(True), got.splitlines(True), "expected", "got"))
