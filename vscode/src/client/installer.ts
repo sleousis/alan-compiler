@@ -25,6 +25,8 @@ export interface ReleaseSource {
   apiLatest: string;
   /** The URL of an asset of the release tagged tag. */
   download: (tag: string, asset: string) => string;
+  /** The largest bundle download accepted. 1 GiB when left out. Tests lower it. */
+  maxDownload?: number;
 }
 
 const REPO = "sleousis/alan-compiler";
@@ -56,7 +58,7 @@ const TEXT_LIMIT = 4 * 1024 * 1024;
 const ZIP_PARALLEL = 16;
 /** Tar entries being written before reading the archive pauses. */
 const TAR_PARALLEL = 64;
-/** Largest download. A bundle is about 100 MB. */
+/** Largest download unless the source says otherwise. A bundle is about 100 MB. */
 const MAX_DOWNLOAD = 1024 * 1024 * 1024;
 
 /** How much an archive may unpack to. */
@@ -214,11 +216,11 @@ function checksumFor(sums: string, name: string): string | undefined {
 
 /** Downloads url into file and returns its SHA-256. */
 async function download(
-  url: string, file: string, signal: AbortSignal | undefined, onBytes: (got: number, total: number) => void,
+  url: string, file: string, max: number, signal: AbortSignal | undefined, onBytes: (got: number, total: number) => void,
 ): Promise<string> {
   const res = await get(url, signal);
   const total = Number(res.headers["content-length"]) || 0;
-  if (total > MAX_DOWNLOAD) {
+  if (total > max) {
     res.destroy();
     throw new InstallError(TOO_LARGE);
   }
@@ -227,7 +229,7 @@ async function download(
   const meter = new Transform({
     transform(chunk: Buffer, _enc, done) {
       got += chunk.length;
-      if (got > MAX_DOWNLOAD) return done(new InstallError(TOO_LARGE));
+      if (got > max) return done(new InstallError(TOO_LARGE));
       hash.update(chunk);
       onBytes(got, total);
       done(null, chunk);
@@ -248,8 +250,8 @@ function unsafePath(name: string): InstallError {
   return new InstallError(`The download holds an unsafe path (${name}). Nothing was installed.`);
 }
 
-function badLink(name: string): InstallError {
-  return new InstallError(`The download holds a link that is not allowed (${name}). Nothing was installed.`);
+function unsafeLink(name: string): InstallError {
+  return new InstallError(`The download holds an unsafe link (${name}). Nothing was installed.`);
 }
 
 function inside(dest: string, target: string): boolean {
@@ -345,7 +347,7 @@ function unzip(
         const type = (entry.externalFileAttributes >>> 16) & 0o170000;
         bytes += entry.uncompressedSize;
         if (bytes > limits.bytes) throw new InstallError(TOO_LARGE);
-        if (type === 0o120000) throw badLink(entry.fileName);
+        if (type === 0o120000) throw unsafeLink(entry.fileName);
         if (type !== 0 && type !== 0o100000 && type !== 0o040000) throw unsafePath(entry.fileName);
         if (!target) return;
         if (entry.fileName.endsWith("/") || type === 0o040000) {
@@ -385,65 +387,23 @@ function unzip(
   });
 }
 
-/** A path as the file system compares it: macOS and Windows ignore case. */
-function pathKey(p: string): string {
-  return process.platform === "linux" ? p : p.normalize("NFC").toLowerCase();
-}
-
-/** True when a folder above p inside dest is one of the symbolic links unpacked so far. */
-function throughLink(dest: string, p: string, links: Set<string>): boolean {
-  for (let dir = path.dirname(p); inside(dest, dir); dir = path.dirname(dir)) {
-    if (links.has(pathKey(dir))) return true;
-  }
-  return false;
-}
-
 /**
- * True for link text of the form ../../a/b: some .. parts, then only names.
- * The kernel follows links inside the text as it goes, so a .. after a name
- * could climb out of a link that points up. Links of this form that stay
- * inside dest on paper also do on disk, in any order of entries.
+ * Where a tar entry goes: undefined for alan/ itself. Throws for anything
+ * but files and folders. The bundles hold no links (tools/package.py copies
+ * real files), and links that each stay inside can still lead out together,
+ * since entries are written in parallel and a later link can take the place
+ * of a folder an earlier one goes through. So every link is refused.
  */
-function upsThenNames(link: string): boolean {
-  const parts = link.split("/");
-  let i = 0;
-  while (i < parts.length && parts[i] === "..") i++;
-  return parts.slice(i).every((p) => p !== "" && p !== "." && p !== "..");
-}
-
-/**
- * Where a tar entry goes, and for a hard link the file it links to. Throws
- * when the entry may not be unpacked into dest. links holds the symbolic
- * links unpacked so far: nothing is unpacked through one, since a link that
- * points to a shallower folder would let a later link climb out of dest.
- */
-function tarTarget(dest: string, entry: tar.ReadEntry, links: Set<string>): { target?: string; linked?: string } {
-  const target = entryTarget(dest, entry.path);
-  if (target && throughLink(dest, target, links)) throw badLink(entry.path);
+function tarTarget(dest: string, entry: tar.ReadEntry): string | undefined {
   switch (entry.type) {
     case "File":
     case "OldFile":
     case "ContiguousFile":
     case "Directory":
-      return { target };
-    case "SymbolicLink": {
-      const link = entry.linkpath ?? "";
-      if (!target || !link || link.includes("\\") || path.isAbsolute(link) || /^[A-Za-z]:/.test(link)
-        || !upsThenNames(link) || !inside(dest, path.resolve(path.dirname(target), link))) {
-        throw badLink(entry.path);
-      }
-      return { target };
-    }
-    case "Link": {
-      let linked: string | undefined;
-      try {
-        linked = entryTarget(dest, entry.linkpath ?? "");
-      } catch {
-        // Reported below.
-      }
-      if (!target || !linked || throughLink(dest, linked, links) || links.has(pathKey(linked))) throw badLink(entry.path);
-      return { target, linked };
-    }
+      return entryTarget(dest, entry.path);
+    case "SymbolicLink":
+    case "Link":
+      throw unsafeLink(entry.path);
     default:
       throw unsafePath(entry.path);
   }
@@ -461,8 +421,6 @@ async function untar(
 ): Promise<void> {
   const total = (await fsp.stat(file)).size;
   const folder = folderMaker();
-  const written = new Map<string, Promise<unknown>>();
-  const links = new Set<string>();
   await new Promise<void>((resolve, reject) => {
     const input = fs.createReadStream(file);
     let error: unknown;
@@ -507,44 +465,31 @@ async function untar(
         error = new InstallError(TOO_LARGE);
         return entry.resume();
       }
-      let where: { target?: string; linked?: string };
+      let target: string | undefined;
       try {
-        where = tarTarget(dest, entry, links);
+        target = tarTarget(dest, entry);
       } catch (e) {
         error = e;
         return entry.resume();
       }
-      const { target, linked } = where;
       if (!target) return entry.resume();
       if (entry.type === "Directory") {
         entry.resume();
         return void track(folder(target));
       }
-      if (entry.type === "SymbolicLink" || entry.type === "Link") {
-        entry.resume();
-        if (!linked) links.add(pathKey(target));
-        return void track((async () => {
-          await folder(path.dirname(target));
-          if (linked) {
-            await written.get(linked);
-            await fsp.link(linked, target);
-          } else {
-            await fsp.symlink(entry.linkpath ?? "", target);
-          }
-        })());
-      }
       // Minipass keeps the entry's data until the pipe below reads it.
       writing.add(entry);
-      written.set(target, track((async () => {
+      const file = target;
+      track((async () => {
         try {
-          await folder(path.dirname(target));
+          await folder(path.dirname(file));
           if (halted) throw new Error("archive stopped");
           // wx: an entry never replaces a file that is already there.
-          await pipeline(entry, fs.createWriteStream(target, { flags: "wx", mode: ((entry.mode ?? 0o644) & 0o777) | 0o600 }));
+          await pipeline(entry, fs.createWriteStream(file, { flags: "wx", mode: ((entry.mode ?? 0o644) & 0o777) | 0o600 }));
         } finally {
           writing.delete(entry);
         }
-      })()));
+      })());
     };
     // Stops everything when the archive cannot go on: the parser gave up
     // (bad compressed data, a too high compression ratio) or the file could
@@ -588,10 +533,10 @@ async function untar(
 
 /**
  * Unpacks a release bundle into dest, an empty folder, without its top
- * alan/ folder. Entries outside alan/, absolute paths, .. parts, device
- * files and links that lead out of dest fail the whole archive, and zip
- * archives may hold no links at all. So does unpacking more than limits
- * allows. onProgress hears entries done (zip) or bytes read (tar.gz).
+ * alan/ folder. Only files and folders are unpacked: an entry outside alan/,
+ * an absolute path, a .. part, a symbolic or hard link, a device file, or
+ * more than limits allows fails the whole archive. onProgress hears entries
+ * done (zip) or bytes read (tar.gz).
  */
 export async function extractArchive(
   file: string, dest: string, kind: "zip" | "tar.gz",
@@ -703,7 +648,7 @@ export async function install(
     if (!want) throw new InstallError(NO_RELEASE);
 
     const mb = (n: number) => (n / 1048576).toFixed(1);
-    const got = await download(src.download(tag, asset), tmp, signal, (n, size) => {
+    const got = await download(src.download(tag, asset), tmp, src.maxDownload ?? MAX_DOWNLOAD, signal, (n, size) => {
       report(size ? `Downloading ${mb(n)} of ${mb(size)} MB` : `Downloading ${mb(n)} MB`, size ? 2 + (68 * n) / size : 2);
     });
     if (got !== want) throw new InstallError(MISMATCH);

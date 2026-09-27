@@ -303,6 +303,40 @@ describe("installer", () => {
     }
   });
 
+  it("stops a download without Content-Length once it passes the limit", async () => {
+    const asset = assetName("v2.0.0", here.platform, here.arch);
+    let sent = 0;
+    const server = http.createServer((req, res) => {
+      if (req.url === "/latest.json") {
+        res.end('{"tag_name":"v2.0.0"}');
+      } else if (req.url === "/v2.0.0/SHA256SUMS") {
+        res.end(`${"5".repeat(64)}  ${asset}
+`);
+      } else {
+        // Chunked, so there is no Content-Length to check first.
+        res.writeHead(200);
+        const more = () => {
+          if (res.destroyed || sent >= 64 * 1024 * 1024) return void res.end();
+          sent += 64 * 1024;
+          if (res.write(Buffer.alloc(64 * 1024))) setImmediate(more);
+          else res.once("drain", more);
+        };
+        more();
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await assert.rejects(install(tmp, { ...source(base), maxDownload: 300 * 1024 }, here.platform, here.arch),
+        { message: "The download is too large or unsafe. Nothing was installed." });
+      assert.deepEqual(fs.readdirSync(tmp), []);
+      assert.ok(sent < 64 * 1024 * 1024, `the server sent all ${sent} bytes`);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
+  });
+
   it("puts back a copy that a failed swap left as alan.old", async () => {
     await install(tmp, fake, here.platform, here.arch);
     fs.renameSync(path.join(tmp, "alan"), path.join(tmp, "alan.old"));
@@ -345,7 +379,7 @@ describe("extractArchive", () => {
     for (const evil of ["dotdot", "absolute", "symlink"]) {
       it(`rejects a ${kind} with a ${evil} entry`, async () => {
         await assert.rejects(extractArchive(path.join(FIXTURES, "evil", `${evil}.${kind}`), dest, kind),
-          /unsafe path|link that is not allowed/);
+          /unsafe path|unsafe link/);
         assert.ok(!fs.existsSync(path.join(tmp, "escaped.txt")));
         assert.ok(!fs.existsSync(path.join(tmp, "inner", "escaped.txt")));
         assert.ok(!fs.existsSync(path.join(tmp, "escaped")));
@@ -354,30 +388,43 @@ describe("extractArchive", () => {
     }
   }
 
-  it("rejects a tar.gz with a hard link out of the folder", async () => {
-    await assert.rejects(extractArchive(path.join(FIXTURES, "evil", "hardlink.tar.gz"), dest, "tar.gz"), /link that is not allowed/);
-    assert.ok(!fs.existsSync(path.join(dest, "passwd")));
-  });
+  /** Every path below root, and whether it is a link. */
+  function walk(root: string): { p: string; link: boolean }[] {
+    const out: { p: string; link: boolean }[] = [];
+    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+      const p = path.join(root, e.name);
+      out.push({ p, link: e.isSymbolicLink() });
+      if (e.isDirectory()) out.push(...walk(p));
+    }
+    return out;
+  }
 
-  it("rejects a tar.gz whose links climb out through another link", async () => {
-    await assert.rejects(extractArchive(path.join(FIXTURES, "evil", "chain.tar.gz"), dest, "tar.gz"),
-      /link that is not allowed \(alan\/a\/b\/s\/u\)/);
-    assert.ok(!fs.existsSync(path.join(tmp, "escaped")));
-    assert.ok(!fs.existsSync(path.join(tmp, "inner", "escaped")));
-  });
-
-  // Windows needs a privilege to make symbolic links, and its bundles are zips without links.
-  (process.platform === "win32" ? it.skip : it)("keeps a link that stays inside", async () => {
-    await extractArchive(path.join(FIXTURES, "inner-link.tar.gz"), dest, "tar.gz");
-    assert.equal(fs.readlinkSync(path.join(dest, "bin", "zig")), "../zig/zig");
-    assert.equal(fs.readFileSync(path.join(dest, "bin", "zig"), "utf8"), "fine\n");
-  });
-
-  it("rejects a tar.gz whose link climbs out through a link that points up", async () => {
-    await assert.rejects(extractArchive(path.join(FIXTURES, "evil", "updown.tar.gz"), dest, "tar.gz"),
-      /link that is not allowed \(alan\/a\/l2\)/);
-    assert.ok(!fs.existsSync(path.join(dest, "a", "l2")));
-  });
+  // The bundles hold no links, so every symbolic or hard link fails the archive.
+  const links: [string, string][] = [
+    ["symlink.tar.gz", "alan/link"],
+    ["hardlink.tar.gz", "alan/passwd"],
+    ["inside-link.tar.gz", "alan/bin/zig"],
+    ["inside-hardlink.tar.gz", "alan/bin/alanc"],
+    ["chain.tar.gz", "alan/a/b/s"],
+    ["updown.tar.gz", "alan/a/b/c/l1"],
+    ["ancestor1.tar.gz", "alan/a/b/c/c2/d/l1"],
+    ["ancestor2.tar.gz", "alan/a/b/c/l1"],
+  ];
+  for (const [fixture, first] of links) {
+    it(`refuses every link: ${fixture}`, async () => {
+      // Several runs, since the review's archives raced parallel writes.
+      for (let run = 0; run < 5; run++) {
+        fs.rmSync(dest, { recursive: true, force: true });
+        fs.mkdirSync(dest);
+        await assert.rejects(extractArchive(path.join(FIXTURES, "evil", fixture), dest, "tar.gz"),
+          { message: `The download holds an unsafe link (${first}). Nothing was installed.` });
+        const all = walk(tmp);
+        assert.deepEqual(all.filter((e) => e.link), []);
+        assert.deepEqual(all.filter((e) => !e.p.startsWith(path.join(tmp, "inner"))), []);
+        assert.ok(!all.some((e) => /pwned|escaped|passwd/.test(e.p)));
+      }
+    });
+  }
 
   it("fails and does not hang on broken compressed data", async () => {
     const good = gzipSync(Buffer.concat([tarHeader("alan/bin/alanc", 70000), Buffer.alloc(70000 + 144, 65),

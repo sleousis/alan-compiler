@@ -109,12 +109,28 @@ def main():
     ]))
 
 
-    # A link that stays inside is fine.
-    (HERE / "inner-link.tar.gz").write_bytes(tar_bytes([
+    # Bundles hold no links, so every link is refused, even one that stays inside.
+    (evil / "inside-link.tar.gz").write_bytes(tar_bytes([
         (ti("alan/zig/zig", mode=0o755), ok), (ti("alan/bin/alanc", mode=0o755), ok),
         (ti("alan/bin/zig", tarfile.SYMTYPE, 0o777, "../zig/zig"), None),
     ]))
-
+    (evil / "inside-hardlink.tar.gz").write_bytes(tar_bytes([
+        (ti("alan/zig/zig", mode=0o755), ok), (ti("alan/bin/alanc", tarfile.LNKTYPE, 0o755, "alan/zig/zig"), None),
+    ]))
+    # The task review's archives: with entries written in parallel, a later
+    # link takes the place of a folder that an earlier link goes through.
+    padding = [(ti(f"alan/pad/{i}"), ok) for i in range(200)]
+    (evil / "ancestor1.tar.gz").write_bytes(tar_bytes([
+        (ti("alan/a/b/c", tarfile.DIRTYPE, 0o755), None), (ti("alan/z", tarfile.DIRTYPE, 0o755), None),
+        (ti("alan/a/b/c/c2/d/l1", tarfile.SYMTYPE, 0o777, "../../../../x"), None),
+        (ti("alan/a/b/c/c2", tarfile.SYMTYPE, 0o777, "../../../z"), None),
+        *padding,
+        (ti("alan/z/d/l1/pwned.txt"), ok),
+    ]))
+    (evil / "ancestor2.tar.gz").write_bytes(tar_bytes([
+        (ti("alan/a/b/c/l1", tarfile.SYMTYPE, 0o777, "../.."), None),
+        (ti("alan/a/b/c", tarfile.SYMTYPE, 0o777, "../../z"), None),
+    ]))
 
 if __name__ == "__main__":
     main()
