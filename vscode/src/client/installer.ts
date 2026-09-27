@@ -78,28 +78,35 @@ const LIMITS: UnpackLimits = { bytes: 4 * 1024 * 1024 * 1024, entries: 200_000 }
 /** An error whose message a person can act on. */
 class InstallError extends Error {}
 
+/** Where Windows keeps the machine's own CPU name, which emulation does not change. */
+const MACHINE_KEY = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
+
 /**
  * The CPU to install for, like the shell installers choose it. VS Code for
- * x64 can run emulated on an arm64 machine, and then process.arch says x64:
- * on macOS sysctl.proc_translated is 1 under Rosetta, and on Windows
- * PROCESSOR_ARCHITEW6432 (else PROCESSOR_ARCHITECTURE) names the machine.
- * translated runs that sysctl and gives its output, or "" when it fails.
+ * x64 can run emulated on an arm64 machine, and then process.arch says x64.
+ * On macOS sysctl.proc_translated is 1 under Rosetta. On Windows an
+ * emulated x64 process sees PROCESSOR_ARCHITECTURE=AMD64, so, like
+ * install.ps1, the machine's PROCESSOR_ARCHITECTURE comes from the registry,
+ * with PROCESSOR_ARCHITEW6432 and PROCESSOR_ARCHITECTURE as a fallback.
+ * ask runs a command and gives its output, or "" when it fails.
  */
 export async function hostArch(
-  platform: NodeJS.Platform, arch: string, env: NodeJS.ProcessEnv, translated: () => Promise<string> = rosetta,
+  platform: NodeJS.Platform, arch: string, env: NodeJS.ProcessEnv, ask: (cmd: string, args: string[]) => Promise<string> = output,
 ): Promise<string> {
   if (platform === "win32") {
-    const machine = (env.PROCESSOR_ARCHITEW6432 || env.PROCESSOR_ARCHITECTURE || "").trim().toUpperCase();
-    return machine === "ARM64" ? "arm64" : arch;
+    const reg = await ask("reg", ["query", MACHINE_KEY, "/v", "PROCESSOR_ARCHITECTURE"]);
+    const machine = /PROCESSOR_ARCHITECTURE\s+REG_\w+\s+(\S+)/i.exec(reg)?.[1] ?? "";
+    const own = env.PROCESSOR_ARCHITEW6432 || env.PROCESSOR_ARCHITECTURE || "";
+    return [machine, own].some((a) => a.trim().toUpperCase() === "ARM64") ? "arm64" : arch;
   }
   if (platform === "darwin" && arch !== "arm64") {
-    return (await translated()).trim() === "1" ? "arm64" : arch;
+    return (await ask("sysctl", ["-n", "sysctl.proc_translated"])).trim() === "1" ? "arm64" : arch;
   }
   return arch;
 }
 
-function rosetta(): Promise<string> {
-  return new Promise((resolve) => execFile("sysctl", ["-n", "sysctl.proc_translated"], { timeout: 5000 },
+function output(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => execFile(cmd, args, { timeout: 5000, windowsHide: true },
     (err, stdout) => resolve(err ? "" : String(stdout))));
 }
 

@@ -537,27 +537,42 @@ describe("release names", () => {
     assert.equal(platformId("darwin", "arm64"), "macos-arm64");
   });
   it("installs for the machine's CPU when VS Code runs emulated", async () => {
-    const never = () => Promise.reject(new Error("sysctl is for macOS only"));
-    // Windows: PROCESSOR_ARCHITEW6432 first, then PROCESSOR_ARCHITECTURE.
-    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITECTURE: "ARM64" }, never), "arm64");
-    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITEW6432: "ARM64", PROCESSOR_ARCHITECTURE: "AMD64" }, never),
+    const asked: string[][] = [];
+    /** Answers reg query with the machine value given, and sysctl with translated. */
+    const fake = (machine: string, translated = "") => async (cmd: string, args: string[]) => {
+      asked.push([cmd, ...args]);
+      if (cmd === "reg") return machine && `\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\r\n    PROCESSOR_ARCHITECTURE    REG_SZ    ${machine}\r\n\r\n`;
+      if (cmd === "sysctl") return translated;
+      throw new Error(`unexpected ${cmd}`);
+    };
+    // Windows: x64 VS Code emulated on ARM64 sees AMD64, and the registry tells.
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITECTURE: "AMD64" }, fake("ARM64")), "arm64");
+    assert.deepEqual(asked[0], ["reg", "query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+      "/v", "PROCESSOR_ARCHITECTURE"]);
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITECTURE: "AMD64" }, fake("AMD64")), "x64");
+    // Without an answer from reg the process's own values decide.
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITECTURE: "ARM64" }, fake("")), "arm64");
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITEW6432: "ARM64", PROCESSOR_ARCHITECTURE: "x86" }, fake("")),
       "arm64");
-    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITEW6432: "AMD64", PROCESSOR_ARCHITECTURE: "ARM64" }, never),
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITEW6432: "AMD64", PROCESSOR_ARCHITECTURE: "ARM64" }, fake("")),
       "x64");
-    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITECTURE: "AMD64" }, never), "x64");
-    assert.equal(await hostArch("win32", "x64", {}, never), "x64");
-    assert.equal(await hostArch("win32", "arm64", { PROCESSOR_ARCHITECTURE: "ARM64" }, never), "arm64");
+    assert.equal(await hostArch("win32", "x64", {}, fake("")), "x64");
+    assert.equal(await hostArch("win32", "arm64", { PROCESSOR_ARCHITECTURE: "ARM64" }, fake("ARM64")), "arm64");
     // macOS: sysctl.proc_translated is 1 under Rosetta.
-    assert.equal(await hostArch("darwin", "x64", {}, async () => "1\n"), "arm64");
-    assert.equal(await hostArch("darwin", "x64", {}, async () => "0\n"), "x64");
-    assert.equal(await hostArch("darwin", "x64", {}, async () => ""), "x64", "an Intel Mac has no such sysctl");
-    assert.equal(await hostArch("darwin", "arm64", {}, never), "arm64");
-    // Linux reports the CPU as it is.
-    assert.equal(await hostArch("linux", "x64", { PROCESSOR_ARCHITECTURE: "ARM64" }, never), "x64");
+    assert.equal(await hostArch("darwin", "x64", {}, fake("", "1\n")), "arm64");
+    assert.equal(await hostArch("darwin", "x64", {}, fake("", "0\n")), "x64");
+    assert.equal(await hostArch("darwin", "x64", {}, fake("", "")), "x64", "an Intel Mac has no such sysctl");
+    // An arm64 Mac and Linux ask nothing.
+    asked.length = 0;
+    assert.equal(await hostArch("darwin", "arm64", {}, fake("")), "arm64");
+    assert.equal(await hostArch("linux", "x64", { PROCESSOR_ARCHITECTURE: "ARM64" }, fake("ARM64")), "x64");
+    assert.deepEqual(asked, []);
   });
   it("finds this machine's CPU", async () => {
     const arch = await hostArch(process.platform, process.arch, process.env);
     assert.ok(arch === "x64" || arch === "arm64", arch);
+    // Not emulated (the test runners): the answer is the process's own CPU.
+    if (process.platform !== "darwin" || process.arch === "arm64") assert.equal(arch, process.arch);
   });
   it("throws for other platforms", () => {
     for (const [p, a] of [["win32", "ia32"], ["linux", "arm"], ["freebsd", "x64"], ["sunos", "x64"]] as const) {
