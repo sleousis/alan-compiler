@@ -151,7 +151,7 @@ stmt:
   ';' { $$ = NULL; }
 | l_value "=" expr ';' { $$ = ast_ass($1, $3,lineno); }
 | compound_stmt { $$ = $1; }
-| func_call ';' { $$ = $1; }
+| func_call ';' { $1->num = CALL_STATEMENT; $$ = $1; }
 | "if" '(' cond ')' stmt { $$ = ast_if($3, $5,lineno); }
 | "if" '(' cond ')' stmt "else" stmt { $$ = ast_ifelse(ast_if($3, $5,lineno), $7,lineno); }
 | "while" '(' cond ')' stmt { $$ = ast_while($3, $5,lineno); }
@@ -245,6 +245,7 @@ int compile_to_module(const char *path, bool optimize, bool codegen, bool debug)
   fclose(yyin);
   initSymbolTable(997);
   createLibrary();
+  check_nesting(tree);
   ast_sem(tree,NULL);
   destroySymbolTable();
   if (codegen && !llvm_compile(tree, debug ? path : nullptr)) return 1;

@@ -20,5 +20,14 @@
   {"file": "tests/errors/string_two_lines.alan", "line": 4, "contains": "String literal not closed on this line"},
   {"file": "tests/errors/string_bad_escape.alan", "line": 4, "contains": "Invalid escape sequence \\q in string literal"},
   {"file": "tests/errors/char_bad_escape.alan", "line": 4, "contains": "Invalid character constant"},
-  {"file": "tests/errors/char_double_quote.alan", "line": 4, "contains": "Invalid character constant"}
+  {"file": "tests/errors/char_double_quote.alan", "line": 4, "contains": "Invalid character constant"},
+  {"file": "tests/errors/nesting_3001_ifs.alan", "line": 3006, "contains": "Nesting is too deep"},
+  {"file": "tests/errors/nesting_3001_expression.alan", "line": 3008, "contains": "Nesting is too deep"},
+  {"file": "tests/errors/call_int_statement.alan", "line": 5, "contains": "Function f returns int, so it cannot be called as a statement."},
+  {"file": "tests/errors/call_library_statement.alan", "line": 4, "contains": "Function readChar returns byte, so it cannot be called as a statement."},
+  {"file": "tests/errors/parameter_hides_function.alan", "line": 5, "contains": "f is not a function."},
+  {"file": "tests/errors/char_empty.alan", "line": 4, "contains": "Invalid character constant"},
+  {"file": "tests/errors/char_two.alan", "line": 4, "contains": "Invalid character constant"},
+  {"file": "tests/errors/string_backslash_at_end.alan", "line": 4, "contains": "String literal not closed on this line"},
+  {"file": "Examples/papariatest.alan", "line": 15, "contains": "Function paparia returns int, so it cannot be called as a statement."}
 ]

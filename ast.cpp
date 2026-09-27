@@ -28,7 +28,6 @@ using namespace llvm;
 
 extern int lineno;
 extern const char* filename;
-SymbolEntry  *e;
 static ast ast_make (kind k, char *c, int n, ast l, ast r, Type_T t, int line) {
 	ast p;
 	p = new struct node;
@@ -179,7 +178,6 @@ static std::unique_ptr<LoopAnalysisManager> TheLAM;
 static std::unique_ptr<FunctionAnalysisManager> TheFAM;
 static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::map<int, std::map<std::string, Value *> > NamedValues;
 // Debug information for -g, null without it.
 static DebugInfo *DI = nullptr;
 
@@ -1170,6 +1168,11 @@ static LLVM_ATTRIBUTE_NOINLINE Type_T checkCall (ast t, SymbolEntry *f) {
 	auto decl = funcDecls.find(theFunction);
 	t->decl = decl == funcDecls.end() ? NULL : decl->second;
 	t->type = theFunction->u.eFunction.resultType;
+	// Spec 1.5: a call statement calls a proc.
+	if (t->num == CALL_STATEMENT && t->type->kind != Type_tag::TYPE_VOID) {
+		error_prefix(t->line);
+		error("Function \033[1;36m%s\033[0m returns %s, so it cannot be called as a statement.", t->id, types[t->type->kind]);
+	}
 	SymbolEntry *param = theFunction->u.eFunction.firstArgument;
 	if (param == NULL && t->left != NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m cannot have any Parameters.", t->id);}
 	if (param != NULL && t->left == NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m must have Parameters.", t->id);}
@@ -1669,4 +1672,63 @@ Type_T createString(char* theString){
 	theType->size = static_cast<RepInteger>(strlen(theString));
 	theType->refCount = 0;
 	return theType;
+}
+
+// The deepest nesting of statements, of expressions and of functions that
+// the compiler accepts. The checker and the code generator recurse once per
+// level, so deeper programs would run out of stack.
+static const int MAX_NESTING = 3000;
+
+static bool isExpression (kind k) {
+	return isArithmetic(k) || isLogical(k) || k == NOT || k == EQUALS || k == NOTEQUALS ||
+	       k == LESSEQUALS || k == GREATEQUALS || k == GREATER || k == LESS ||
+	       k == ARREXPR || k == FUNCALL;
+}
+
+// The first line of the construct t: the smallest line in its tree.
+static int firstLine (ast t) {
+	int line = t->line;
+	std::vector<ast> todo{t};
+	while (!todo.empty()) {
+		ast n = todo.back();
+		todo.pop_back();
+		if (n == NULL) continue;
+		if (n->line > 0 && n->line < line) line = n->line;
+		todo.push_back(n->left);
+		todo.push_back(n->right);
+	}
+	return line;
+}
+
+void check_nesting (ast tree) {
+	// Walk the tree with a stack of its own, since it may be deeper than
+	// the limit. Each node carries how deep it is in if and while
+	// statements, in operators and calls, and in functions.
+	struct Item { ast t; int stmt, expr, func; };
+	std::vector<Item> todo{{tree, 0, 0, 0}};
+	while (!todo.empty()) {
+		Item it = todo.back();
+		todo.pop_back();
+		ast t = it.t;
+		if (it.stmt > MAX_NESTING || it.expr > MAX_NESTING || it.func > MAX_NESTING) {
+			error_prefix(firstLine(t));
+			error("Nesting is too deep");
+		}
+		// The right child goes first, so the left one is visited first.
+		for (int side = 1; side >= 0; side--) {
+			ast c = side ? t->right : t->left;
+			if (c == NULL) continue;
+			Item next = {c, it.stmt, it.expr, it.func};
+			// The IF inside an IFELSE is the same statement.
+			if ((c->k == WHILE || c->k == IF || c->k == IFELSE) && !(t->k == IFELSE && side == 0))
+				next.stmt++;
+			if (c->k == FUNCDEF) next.func++;
+			// The left operands of a chain such as a + b - c are compiled
+			// in a loop, so they are not a level deeper.
+			bool chain = side == 0 && ((isArithmetic(t->k) && isArithmetic(c->k)) ||
+			                           (isLogical(t->k) && isLogical(c->k)));
+			if (isExpression(c->k) && !chain) next.expr++;
+			todo.push_back(next);
+		}
+	}
 }

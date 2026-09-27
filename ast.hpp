@@ -13,6 +13,9 @@ typedef enum {
 
 extern bool opt;
 
+// The num of a FUNCALL node that is a statement of its own.
+#define CALL_STATEMENT 1
+
 typedef struct node {
 	kind k;
 	char *id;
@@ -59,6 +62,9 @@ ast ast_seq (ast l, ast r, int line);
 
 int ast_run (ast tree);
 Type_T ast_sem(ast tree, SymbolEntry * f);
+// Reports "Nesting is too deep" when statements, expressions or functions
+// nest more than 3000 levels.
+void check_nesting (ast tree);
 Value * ast_compile (ast t);
 // debugFile is the source path for -g, nullptr without debug information.
 bool llvm_compile (ast t, const char *debugFile);
