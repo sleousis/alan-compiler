@@ -213,11 +213,15 @@ jobs:
       # Windows gives main() its arguments in the ANSI code page. A source in
       # a folder with Greek letters and a space must still compile, build and
       # run, also when TEMP and TMP hold Greek letters. An error names the
-      # file by its base name.
+      # file by its base name. With UTF-8 as the ANSI code page the test would
+      # pass without the fix, so that fails it.
       - name: Test non-ASCII paths (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $acp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage').ACP
+          Write-Host "ANSI code page: $acp"
+          if ($acp -eq '65001') { throw 'The ANSI code page is UTF-8, so this test proves nothing.' }
           $alanc = (Resolve-Path "dist/${{ matrix.platform }}/bin/alanc.exe").Path
           $env:ALAN_RUNTIME = (Resolve-Path "dist/${{ matrix.platform }}/lib/libalanrt.a").Path
           $dir = Join-Path $env:RUNNER_TEMP 'Σάββας dir'
@@ -320,16 +324,47 @@ jobs:
           "$lldb" --version
           $PYTHON tests/debug/lldb_check.py --alanc "$alanc" --lldb "$lldb"
 
+      # On macOS build -g keeps its object as <out>.o. A file there that
+      # alanc did not make must stay, and the build must fail. Its own object
+      # from an earlier build is replaced.
+      - name: Test that build -g keeps other object files (macOS)
+        if: runner.os == 'macOS'
+        env:
+          ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
+        run: |
+          alanc="dist/${{ matrix.platform }}/bin/alanc"
+          d="$RUNNER_TEMP/keep-object"
+          rm -rf "$d"
+          mkdir -p "$d"
+          echo "not from alanc" > "$d/prog.o"
+          if "$alanc" build -g Examples/HelloWorld.alan -o "$d/prog" 2> "$d/err.txt"; then
+            echo "build -g succeeded over prog.o"
+            exit 1
+          fi
+          cat "$d/err.txt"
+          grep -q "alanc did not make it" "$d/err.txt"
+          test "$(cat "$d/prog.o")" = "not from alanc"
+          test ! -e "$d/prog"
+          rm "$d/prog.o"
+          "$alanc" build -g Examples/HelloWorld.alan -o "$d/prog"
+          test -f "$d/prog.o"
+          "$alanc" build -g Examples/HelloWorld.alan -o "$d/prog"
+          "$d/prog" | cmp - tests/expected/HelloWorld.txt
+
       # The bundle carries the zig that the tests used. On Windows ARM64
       # that is the x86_64 build, which runs under emulation.
       - name: Package
         run: $PYTHON tools/package.py --platform ${{ matrix.platform }} --version "$VERSION" --zig "$ZIG_DIR"
 
       # Runs the extracted bundle the way a user would, so alanc must find
-      # zig and the runtime inside it.
+      # zig and the runtime inside it. alanc --version prints the version in
+      # the bundle's VERSION file, and "dev" outside a bundle.
       - name: Smoke test the bundle
         run: |
           unset ALAN_ZIG ALAN_RUNTIME
+          dev=$(dist/${{ matrix.platform }}/bin/alanc --version | tr -d '\r')
+          echo "$dev"
+          test "$dev" = "alanc dev"
           smoke="$RUNNER_TEMP/smoke"
           rm -rf "$smoke"
           mkdir -p "$smoke"
@@ -347,12 +382,47 @@ jobs:
           test -f "$smoke/alan/lib/libalanrt.a"
           test -f "$smoke/alan/README.txt"
           tr -d '\r' < "$smoke/alan/VERSION" | grep -qx "$VERSION"
+          version=$("$alanc" --version | tr -d '\r')
+          echo "$version"
+          test "$version" = "alanc $VERSION"
           "$alanc" run Examples/HelloWorld.alan > "$smoke/out.txt"
           tr -d '\r' < "$smoke/out.txt" | cmp - tests/expected/HelloWorld.txt
 
+      # The bundle must also work from a folder with Greek letters, with no
+      # ALAN_ZIG, ALAN_RUNTIME or ZIG_GLOBAL_CACHE_DIR, so alanc finds zig and
+      # the runtime next to itself and zig keeps its cache under a Greek
+      # LOCALAPPDATA. A copy of the warm cache saves building libc again.
+      - name: Test the bundle in a Greek folder (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Remove-Item Env:ALAN_ZIG, Env:ALAN_RUNTIME, Env:ZIG_GLOBAL_CACHE_DIR -ErrorAction SilentlyContinue
+          $root = Join-Path $env:RUNNER_TEMP 'Εγκατάσταση Άλαν'
+          $appData = Join-Path $env:RUNNER_TEMP 'Τοπικά δεδομένα'
+          Remove-Item -Recurse -Force $root, $appData -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $root, $appData | Out-Null
+          & $env:PYTHON -m zipfile -e "out/alan-$env:VERSION-${{ matrix.platform }}.zip" $root
+          if ($LASTEXITCODE -ne 0) { throw 'unzip failed' }
+          $cache = Join-Path $appData 'zig'
+          Copy-Item -Recurse "$env:GITHUB_WORKSPACE\.zig-global-cache" $cache
+          $env:LOCALAPPDATA = $appData
+          $alanc = Join-Path $root 'alan\bin\alanc.exe'
+          $version = (& $alanc --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -ne "alanc $env:VERSION") { throw "--version printed: $version" }
+          $start = Get-Date
+          $out = & $alanc run Examples/HelloWorld.alan | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "run failed with exit code $LASTEXITCODE" }
+          $got = $out -replace "`r", ''
+          if ($got -ne [IO.File]::ReadAllText("$PWD\tests\expected\HelloWorld.txt")) { throw "run printed: $got" }
+          $used = @(Get-ChildItem -Recurse -File $cache | Where-Object { $_.LastWriteTime -ge $start })
+          Write-Host "zig wrote $($used.Count) files under $cache"
+          if ($used.Count -eq 0) { throw "zig did not use its cache under $cache" }
+
       # Lays the bundle out like a release for the installer tests below:
       # v0.0.0-ci holds it with its checksum, v0.0.0-bad a damaged copy with
-      # the checksum of the good one, v0.0.0-none no bundle at all.
+      # the checksum of the good one, v0.0.0-none no bundle at all. The
+      # release list puts an extension release, a draft and a prerelease
+      # before v0.0.0-ci, which an install without ALAN_VERSION must pick.
       - name: Prepare a release folder for the installers
         run: |
           case "${{ matrix.platform }}" in windows-*) ext=zip ;; *) ext=tar.gz ;; esac
@@ -367,6 +437,16 @@ jobs:
           printf '%s  %s\n' "$sum" "$good" > "$srv/v0.0.0-ci/SHA256SUMS"
           printf '%s  %s\n' "$sum" "$bad" > "$srv/v0.0.0-bad/SHA256SUMS"
           : > "$srv/v0.0.0-none/SHA256SUMS"
+          mkdir -p "$RUNNER_TEMP/srv/api"
+          cat > "$RUNNER_TEMP/srv/api/releases" <<'EOF'
+          [
+            {"tag_name": "vscode-v9.0.0", "draft": false, "prerelease": false, "body": "not \"tag_name\": \"v9.0.0\", {}"},
+            {"tag_name": "v9.9.9", "draft": true, "prerelease": false},
+            {"tag_name": "v9.0.0-rc.1", "draft": false, "prerelease": true},
+            {"tag_name": "v0.0.0-ci", "draft": false, "prerelease": false, "assets": [{"name": "a", "uploader": {"login": "b"}}]},
+            {"tag_name": "v0.0.0-none", "draft": false, "prerelease": false}
+          ]
+          EOF
 
       # Installs the bundle from a local server the way a user would, then
       # runs alanc from a shell with a clean environment.
@@ -398,11 +478,31 @@ jobs:
           }
           expect_failure v0.0.0-none "Alan v0.0.0-none has no download for ${{ matrix.platform }}" gone
           expect_failure v0.0.0-bad "Checksum mismatch" gone
-          ALAN_VERSION=v0.0.0-ci sh install/install.sh
+          # with no ALAN_VERSION the newest compiler release in the list wins
+          ALAN_API_URL=http://127.0.0.1:8000/api sh install/install.sh > "$RUNNER_TEMP/out.txt"
+          cat "$RUNNER_TEMP/out.txt"
+          grep -q "Installed Alan v0.0.0-ci\." "$RUNNER_TEMP/out.txt"
           # a second run replaces the first install
           ALAN_VERSION=v0.0.0-ci sh install/install.sh
           # a failed upgrade keeps the working install
           expect_failure v0.0.0-bad "Checksum mismatch" kept
+          # an interrupted swap left only alan.old, which a failed run puts back
+          mv "$dest" "$dest.old"
+          expect_failure v0.0.0-bad "Checksum mismatch" kept
+          # and a good run replaces
+          mv "$dest" "$dest.old"
+          ALAN_VERSION=v0.0.0-ci sh install/install.sh
+          test -x "$dest/bin/alanc"
+          test ! -e "$dest.old"
+          # a real file named alanc in ~/.local/bin belongs to the user and stays
+          rm "$HOME/.local/bin/alanc"
+          echo "mine" > "$HOME/.local/bin/alanc"
+          ALAN_VERSION=v0.0.0-ci sh install/install.sh 2> "$RUNNER_TEMP/err.txt"
+          cat "$RUNNER_TEMP/err.txt"
+          grep -q "is not a link" "$RUNNER_TEMP/err.txt"
+          test "$(cat "$HOME/.local/bin/alanc")" = mine
+          rm "$HOME/.local/bin/alanc"
+          ALAN_VERSION=v0.0.0-ci sh install/install.sh
           run_installed
 
       # Installs with PowerShell 7, then again with Windows PowerShell 5.1,
@@ -450,6 +550,16 @@ jobs:
               if ($r.Code -ne 0) { throw "$shell failed with exit code $($r.Code)" }
               if (-not $r.Out.Contains('(${{ matrix.platform }})')) { throw "$shell picked the wrong platform" }
             }
+            # with no ALAN_VERSION the newest compiler release in the list wins
+            $env:ALAN_API_URL = 'http://127.0.0.1:8000/api'
+            foreach ($shell in 'pwsh', 'powershell') {
+              $r = Invoke-Installer $shell ''
+              if ($r.Code -ne 0 -or -not $r.Out.Contains('Installed Alan v0.0.0-ci (')) { throw "$shell did not pick v0.0.0-ci from the list" }
+            }
+            Remove-Item Env:ALAN_API_URL
+            Assert-Failure 'v0.0.0-bad' 'Checksum mismatch' $true
+            # an interrupted swap left only alan.old, which a failed run puts back
+            [IO.Directory]::Move($dest, "$dest.old")
             Assert-Failure 'v0.0.0-bad' 'Checksum mismatch' $true
             $lock = [IO.File]::Open("$dest\README.txt", 'Open', 'Read', 'None')
             try { Assert-Failure 'v0.0.0-ci' "Could not replace $dest" $true } finally { $lock.Close() }
