@@ -220,5 +220,103 @@
     "input": null,
     "opt": true,
     "expected": "regress/long_expression.txt"
+  },
+  {
+    "name": "short_circuit",
+    "file": "tests/regress/short_circuit.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/short_circuit.txt"
+  },
+  {
+    "name": "short_circuit",
+    "file": "tests/regress/short_circuit.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/short_circuit.txt"
+  },
+  {
+    "name": "byte_unsigned",
+    "file": "tests/regress/byte_unsigned.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/byte_unsigned.txt"
+  },
+  {
+    "name": "byte_unsigned",
+    "file": "tests/regress/byte_unsigned.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/byte_unsigned.txt"
+  },
+  {
+    "name": "hex_escapes",
+    "file": "tests/regress/hex_escapes.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/hex_escapes.txt"
+  },
+  {
+    "name": "hex_escapes",
+    "file": "tests/regress/hex_escapes.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/hex_escapes.txt"
+  },
+  {
+    "name": "static_chain_shadowing",
+    "file": "tests/regress/static_chain_shadowing.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/static_chain_shadowing.txt"
+  },
+  {
+    "name": "static_chain_shadowing",
+    "file": "tests/regress/static_chain_shadowing.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/static_chain_shadowing.txt"
+  },
+  {
+    "name": "libc_names",
+    "file": "tests/regress/libc_names.alan",
+    "input": "regress/libc_names.in",
+    "opt": false,
+    "expected": "regress/libc_names.txt"
+  },
+  {
+    "name": "libc_names",
+    "file": "tests/regress/libc_names.alan",
+    "input": "regress/libc_names.in",
+    "opt": true,
+    "expected": "regress/libc_names.txt"
+  },
+  {
+    "name": "byte_runtime_args",
+    "file": "tests/regress/byte_runtime_args.alan",
+    "input": "regress/byte_runtime_args.in",
+    "opt": false,
+    "expected": "regress/byte_runtime_args.txt"
+  },
+  {
+    "name": "byte_runtime_args",
+    "file": "tests/regress/byte_runtime_args.alan",
+    "input": "regress/byte_runtime_args.in",
+    "opt": true,
+    "expected": "regress/byte_runtime_args.txt"
+  },
+  {
+    "name": "string_literal_loop",
+    "file": "tests/regress/string_literal_loop.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/string_literal_loop.txt"
+  },
+  {
+    "name": "string_literal_loop",
+    "file": "tests/regress/string_literal_loop.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/string_literal_loop.txt"
   }
 ]

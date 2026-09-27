@@ -1,0 +1,23 @@
+-- byte arguments and results of library functions are unsigned (I1).
+main () : proc
+  a : byte;
+  b : byte;
+  c : byte;
+  i : int;
+{
+  a = shrink(200);
+  b = 'a';
+  writeByte(a % b);
+  writeString(" ");
+  writeInteger(extend(a % b));
+  writeString("\n");
+  b = shrink(readInteger());
+  c = shrink(readInteger());
+  i = extend(b + c);
+  writeInteger(i);
+  writeString(" ");
+  writeByte(b + c);
+  writeString(" ");
+  writeChar(shrink(65 + 256));
+  writeString("\n");
+}

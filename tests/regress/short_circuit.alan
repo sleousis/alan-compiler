@@ -1,0 +1,21 @@
+-- & and | evaluate their right operand only when needed (C5).
+main () : proc
+  n : int;
+  side (r : int) : int
+  {
+    writeString("side ");
+    n = n + 1;
+    return r;
+  }
+{
+  n = 0;
+  if (1 == 2 & side(1) == 1) writeString("and\n"); else writeString("no and\n");
+  if (1 == 1 | side(1) == 1) writeString("or\n");
+  if (1 == 1 & side(1) == 1) writeString("and2\n");
+  if (1 == 2 | side(0) == 1) writeString("or2\n"); else writeString("no or2\n");
+  if (1 == 2 & side(1) == 1 & side(1) == 1) writeString("x\n");
+  if (1 == 1 | side(1) == 1 | side(1) == 1) writeString("y\n");
+  while (n < 10 & side(1) == 1) n = n + 1;
+  writeInteger(n);
+  writeString("\n");
+}

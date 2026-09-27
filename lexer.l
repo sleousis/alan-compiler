@@ -66,7 +66,7 @@ S [!|&<>()\[\]{},:+\-*%/;]
   return T_string;
 }
 
-"\'"({L}|{D}|{S}|" "|"\\n"|"\\t"|"\\r"|"\\0"|"\\\\"|"\\\'"|"\\\""|"\\x"({D}|[a-f]){2})"\'" { yylval.c = strdup(yytext); return T_char; }
+"\'"({L}|{D}|{S}|" "|"\\n"|"\\t"|"\\r"|"\\0"|"\\\\"|"\\\'"|"\\\""|"\\x"[0-9a-fA-F]{2})"\'" { yylval.c = strdup(yytext); return T_char; }
 
 {L}({L}|{D}|_)*     { yylval.c = strdup(yytext); return T_id; }
 {D}+     	 		{ yylval.n = atoi(yytext); return T_const; }

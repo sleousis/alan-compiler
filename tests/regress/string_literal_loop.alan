@@ -1,0 +1,30 @@
+-- String literals in a loop do not grow the stack, and each evaluation
+-- gives fresh contents that a callee may change (C10).
+main () : proc
+  i : int;
+  j : int;
+  c : int;
+  p (s : reference byte []) : proc
+  {
+    writeString(s);
+    s[0] = 'X';
+    writeString(s);
+  }
+{
+  i = 0;
+  c = 0;
+  while (i < 1000) {
+    j = 0;
+    while (j < 1000) {
+      c = c + strlen("abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz");
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  if (c == 62000000) writeString("62000000\n");
+  i = 0;
+  while (i < 2) {
+    p("abc\n");
+    i = i + 1;
+  }
+}

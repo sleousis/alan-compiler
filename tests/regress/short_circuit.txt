@@ -1,0 +1,6 @@
+no and
+or
+side and2
+side no or2
+y
+side side side side 10

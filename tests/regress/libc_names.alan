@@ -1,0 +1,27 @@
+-- Alan functions named like C functions do not replace them in the
+-- runtime or in generated code (C11).
+main () : proc
+  buf : byte [4000];
+  c : byte;
+  memset () : proc { writeString("user memset\n"); }
+  memcpy () : proc { writeString("user memcpy\n"); }
+  strlen (s : reference byte []) : int { return 99; }
+  getchar () : int { return 65; }
+  putchar (c : int) : proc { }
+  exit (n : int) : proc { writeString("user exit\n"); }
+  write () : proc { }
+  read () : proc { }
+  fwrite () : proc { }
+  printf () : proc { }
+  alan_writeString (s : reference byte []) : proc { }
+{
+  buf[0] = 'x';
+  writeChar(buf[0]);
+  writeString("\n");
+  writeInteger(strlen("abc"));
+  writeString("\n");
+  c = readChar();
+  writeChar(c);
+  writeString("\n");
+  exit(3);
+}

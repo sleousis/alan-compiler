@@ -1,0 +1,14 @@
+-- \xnn escapes take both letter cases, in characters and strings (C7).
+main () : proc
+{
+  writeChar('\x6a');
+  writeChar('\x4B');
+  writeChar('\x4b');
+  writeString("\x6b\x4B\x4c\n");
+  writeByte('\x1d');
+  writeString("\n");
+  writeByte('\xff');
+  writeString("\n");
+  writeByte('\xA0');
+  writeString("\n");
+}

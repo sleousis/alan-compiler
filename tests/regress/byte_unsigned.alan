@@ -1,0 +1,20 @@
+-- byte holds 0 to 255, so it compares and divides unsigned (C6).
+main () : proc
+  a : byte;
+  b : byte;
+{
+  a = shrink(200);
+  b = 'a';
+  if (a > b) writeString("gt\n"); else writeString("le\n");
+  if (b < a) writeString("lt\n"); else writeString("ge\n");
+  if (a >= b) writeString("ge\n"); else writeString("lt\n");
+  if (b <= a) writeString("le\n"); else writeString("gt\n");
+  writeByte(a / shrink(2));
+  writeString("\n");
+  writeByte(a % b);
+  writeString("\n");
+  writeByte(shrink(255) / shrink(16));
+  writeString("\n");
+  writeByte(a + a);
+  writeString("\n");
+}

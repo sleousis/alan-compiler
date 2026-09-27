@@ -231,24 +231,42 @@ inline void zeroArray(Value *p, int bytes) {
 	Builder.CreateMemSet(p, Builder.getInt8(0), bytes, MaybeAlign(1));
 }
 
-//string helper functions
-int hexToInt(char c)
-{
-	int first = c / 16 - 3;
-	int second = c % 16;
-	int result = first*10 + second;
-	if (result > 9) result--;
-	return result;
+static int hexDigit(char c) {
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	return c - 'A' + 10;
 }
 
-int hexToLetter(char c, char d)
-{
-	int high = hexToInt(c) * 16;
-	int low = hexToInt(d);
-	return high+low;
+// The bytes a character or string literal stands for, with its escape
+// sequences replaced. The lexer only accepts the escapes of the spec.
+static std::string unescape(const char *s) {
+	std::string out;
+	for (size_t i = 0; s[i] != '\0'; i++) {
+		if (s[i] != '\\') {
+			out.push_back(s[i]);
+			continue;
+		}
+		switch (s[++i]) {
+		case 'n': out.push_back('\n'); break;
+		case 't': out.push_back('\t'); break;
+		case 'r': out.push_back('\r'); break;
+		case '0': out.push_back('\0'); break;
+		case 'x':
+			if (!isxdigit((unsigned char)s[i + 1]) || !isxdigit((unsigned char)s[i + 2]))
+				internal("bad escape sequence in literal %s", s);
+			out.push_back((char)(hexDigit(s[i + 1]) * 16 + hexDigit(s[i + 2])));
+			i += 2;
+			break;
+		default: out.push_back(s[i]); break; // \\, \' and \"
+		}
+	}
+	return out;
 }
 
-//struct implementing function's variables (names and types)
+// A variable of an Alan function: a local, a parameter, or a variable of an
+// enclosing function that it reaches through a hidden parameter. Each
+// declaration has one of these, shared by every function that sees it, so
+// a call passes the right variable even when a name is shadowed.
 struct variableStruct {
 	const char* varName;
 	Type* varType;
@@ -257,9 +275,7 @@ struct variableStruct {
 
 //struct implementing function's hidden parameters
 struct hiddenParameterStruct {
-	const char* parName;
-	Type* parType;
-	bool isArray;
+	variableStruct *var;
 };
 
 //struct implementing function's parameters
@@ -277,6 +293,8 @@ struct functionTable {
 	struct functionTable *father;
 	std::vector<struct functionTable*> children;
 	std::map<std::string, Value *> NamedValues;
+	// The address of each variable the function sees, by declaration.
+	std::map<variableStruct *, Value *> addresses;
 	std::vector<struct parameterStruct*> funParameters;
 	std::vector<struct variableStruct*> funVariables;
 	std::vector<struct hiddenParameterStruct*> funHiddenParameters;
@@ -325,8 +343,28 @@ Constant *createFunction(char* name, Type* retType) {
 		Args.push_back(currentFunction->funParameters[i]->parType);
 	}
 	FunctionType *type = FunctionType::get(retType, Args, false);
-	Function *TheFunction = Function::Create(type, Function::ExternalLinkage, name, TheModule.get());
+	// The prefix keeps an Alan function from taking the name of a C
+	// function, such as memset or strlen, that the runtime or LLVM calls.
+	// Alan names have no dots. The debug information keeps the Alan name.
+	Function *TheFunction = Function::Create(type, Function::InternalLinkage,
+	                                         std::string("alan.") + name, TheModule.get());
 	return TheFunction;
+}
+
+// Makes a variable of the current function visible under its name at the
+// address p, which points to an object of type pointee.
+static void addVariable(variableStruct *v, Value *p, Type *pointee) {
+	currentFunction->NamedValues[v->varName] = trackPtr(p, pointee);
+	currentFunction->addresses[v] = p;
+	currentFunction->funVariables.push_back(v);
+}
+
+static variableStruct *newVariableStruct(const char *name, Type *type, bool isArray) {
+	variableStruct *v = new variableStruct();
+	v->varName = name;
+	v->varType = type;
+	v->isArray = isArray;
+	return v;
 }
 
 bool FuncDefLockEnabled = true;
@@ -387,15 +425,54 @@ static Value *compileArithmetic (ast t) {
 		first = first->left;
 	}
 	Value *acc = rvalue(first);
+	// byte holds 0 to 255, so its division and remainder are unsigned.
+	bool isByte = acc->getType()->isIntegerTy(8);
 	for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
 		Value *r = rvalue((*it)->right);
 		switch ((*it)->k) {
 		case PLUS: acc = Builder.CreateAdd(acc, r, "addtmp"); break;
 		case MINUS: acc = Builder.CreateSub(acc, r, "subtmp"); break;
 		case TIMES: acc = Builder.CreateMul(acc, r, "multmp"); break;
-		case DIV: acc = Builder.CreateSDiv(acc, r, "divtmp"); break;
-		default: acc = Builder.CreateSRem(acc, r, "modtmp"); break;
+		case DIV: acc = isByte ? Builder.CreateUDiv(acc, r, "divtmp") : Builder.CreateSDiv(acc, r, "divtmp"); break;
+		default: acc = isByte ? Builder.CreateURem(acc, r, "modtmp") : Builder.CreateSRem(acc, r, "modtmp"); break;
 		}
+	}
+	return acc;
+}
+
+static bool isLogical (kind k) {
+	return k == AND || k == OR;
+}
+
+// Compiles a chain of & and | with short-circuit evaluation: the right
+// operand is evaluated only when the left one does not decide the result.
+// Chains nest on the left like arithmetic ones, so walk them in a loop.
+static Value *compileLogical (ast t) {
+	std::vector<ast> chain;
+	ast first = t;
+	while (isLogical(first->k)) {
+		chain.push_back(first);
+		first = first->left;
+	}
+	Value *acc = ast_compile(first);
+	Function *TheFunction = Builder.GetInsertBlock()->getParent();
+	for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+		bool isAnd = (*it)->k == AND;
+		BasicBlock *LeftBB = Builder.GetInsertBlock();
+		BasicBlock *RightBB = BasicBlock::Create(TheContext, isAnd ? "and_right" : "or_right", TheFunction);
+		BasicBlock *EndBB = BasicBlock::Create(TheContext, isAnd ? "and_end" : "or_end", TheFunction);
+		if (isAnd) Builder.CreateCondBr(acc, RightBB, EndBB);
+		else Builder.CreateCondBr(acc, EndBB, RightBB);
+		Builder.SetInsertPoint(RightBB);
+		Value *r = ast_compile((*it)->right);
+		// The right operand can end in another block when it has & or | inside.
+		BasicBlock *RightEndBB = Builder.GetInsertBlock();
+		Builder.CreateBr(EndBB);
+		Builder.SetInsertPoint(EndBB);
+		PHINode *phi = Builder.CreatePHI(i1, 2, isAnd ? "andtmp" : "ortmp");
+		phi->addIncoming(c1(isAnd ? 0 : 1), LeftBB);
+		phi->addIncoming(r, RightEndBB);
+		acc = phi;
 	}
 	return acc;
 }
@@ -513,37 +590,15 @@ Value * ast_compile (ast t) {
 		return nullptr;
 	}
 	case VAR: {
-		struct variableStruct *tmp = new struct variableStruct ();
-		if (t->left->type->kind == Type_tag::TYPE_INTEGER) {
-			if (t->left->k == TYPE) {
-				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(i32,0,t->id), i32);
-				tmp->varName = t->id; tmp->varType = i32; tmp->isArray = false;
-				currentFunction->funVariables.push_back(tmp);
-			}
-			else if (t->left->k == TYPEARR) {
-				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(ArrayType::get(i32,t->left->num),0,t->id), ArrayType::get(i32,t->left->num));
-				zeroArray(currentFunction->NamedValues[t->id], 4 * t->left->num);
-				tmp->varName = t->id; tmp->varType = i32; tmp->isArray = true;
-				currentFunction->funVariables.push_back(tmp);
-			}
-		}
-		else if (t->left->type->kind == Type_tag::TYPE_CHAR) {
-			if (t->left->k == TYPE) {
-				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(i8,0,t->id), i8);
-				tmp->varName = t->id; tmp->varType = i8; tmp->isArray = false;
-				currentFunction->funVariables.push_back(tmp);
-			}
-			else if (t->left->k == TYPEARR) {
-				currentFunction->NamedValues[t->id] = trackPtr(Builder.CreateAlloca(ArrayType::get(i8,t->left->num),0,t->id), ArrayType::get(i8,t->left->num));
-				zeroArray(currentFunction->NamedValues[t->id], t->left->num);
-				tmp->varName = t->id; tmp->varType = i8; tmp->isArray = true;
-				currentFunction->funVariables.push_back(tmp);
-			}
-		}
+		Type *elemType = t->left->type->kind == Type_tag::TYPE_CHAR ? i8 : i32;
+		bool isArray = t->left->k == TYPEARR;
+		Type *objType = isArray ? (Type *)ArrayType::get(elemType, t->left->num) : elemType;
+		AllocaInst *slot = Builder.CreateAlloca(objType, 0, t->id);
+		if (isArray) zeroArray(slot, (elemType == i8 ? 1 : 4) * t->left->num);
+		addVariable(newVariableStruct(t->id, elemType, isArray), slot, objType);
 		if (DI) {
-			di_variable(DI, cast<AllocaInst>(currentFunction->NamedValues[t->id]), t->id, t->line,
-			            t->left->type->kind == Type_tag::TYPE_CHAR, t->left->k == TYPEARR,
-			            t->left->k == TYPEARR ? t->left->num : 0);
+			di_variable(DI, slot, t->id, t->line, elemType == i8, isArray,
+			            isArray ? t->left->num : 0);
 		}
 		return nullptr;
 	}
@@ -571,10 +626,15 @@ Value * ast_compile (ast t) {
 			isInLibrary = true;
 		}
 		std::vector<Value*> Args;
-		// Pass the variables of the enclosing functions that the callee can see.
+		// Pass the variables of the enclosing functions that the callee can
+		// see. The caller sees each of them too, maybe under a shadowed name.
 		if (!isInLibrary) {
-			for (size_t i = 0; i < tmp->funHiddenParameters.size(); i++)
-				Args.push_back(currentFunction->NamedValues[tmp->funHiddenParameters[i]->parName]);
+			for (hiddenParameterStruct *h : tmp->funHiddenParameters) {
+				auto found = currentFunction->addresses.find(h->var);
+				if (found == currentFunction->addresses.end())
+					internal("%s cannot pass variable %s to %s", currentFunction->funName, h->var->varName, tmp->funName);
+				Args.push_back(found->second);
+			}
 		}
 		// The arguments nest on the right: SEQ(a, SEQ(b, c)).
 		ast iter = t->left;
@@ -585,7 +645,10 @@ Value * ast_compile (ast t) {
 			if (tmp->funParameters[i]->isRef) Args.push_back(ast_compile(arg));
 			else Args.push_back(rvalue(arg));
 		}
-		return Builder.CreateCall(tmp->func, Args);
+		CallInst *call = Builder.CreateCall(tmp->func, Args);
+		// The zeroext of byte arguments and results must be on the call too.
+		call->setAttributes(tmp->func->getAttributes());
+		return call;
 	}
 	case FUNCDEF: {
 		if (!FuncDefLockEnabled) {
@@ -603,57 +666,32 @@ Value * ast_compile (ast t) {
 			}
 			//set args names and initialization
 			Function::arg_iterator argss = currentFunction->func->arg_begin();
-			for (size_t i = 0; i < currentFunction->funHiddenParameters.size(); i++) {
+			for (hiddenParameterStruct *h : currentFunction->funHiddenParameters) {
 				Value *tmpArg = argss++;
-				if (currentFunction->funHiddenParameters[i]->isArray)
-					currentFunction->NamedValues[currentFunction->funHiddenParameters[i]->parName] =
-						trackPtr(tmpArg, ArrayType::get(currentFunction->funHiddenParameters[i]->parType,1));
-				else currentFunction->NamedValues[currentFunction->funHiddenParameters[i]->parName] =
-					trackPtr(tmpArg, currentFunction->funHiddenParameters[i]->parType);
-				struct variableStruct *vartmp = new struct variableStruct ();
-				vartmp->varName = currentFunction->funHiddenParameters[i]->parName;
-				vartmp->varType = currentFunction->funHiddenParameters[i]->parType;
-				vartmp->isArray = currentFunction->funHiddenParameters[i]->isArray;
-				currentFunction->funVariables.push_back(vartmp);
+				tmpArg->setName(h->var->varName);
+				// An array arrives as a pointer to its first element.
+				addVariable(h->var, tmpArg, h->var->isArray ? (Type *)ArrayType::get(h->var->varType, 1) : h->var->varType);
 			}
-			for (size_t i = 0; i < currentFunction->funParameters.size(); i++) {
+			for (parameterStruct *par : currentFunction->funParameters) {
 				Value *tmpArg = argss++;
-				if (!currentFunction->funParameters[i]->isRef) {
-					currentFunction->NamedValues[currentFunction->funParameters[i]->parName] =
-						trackPtr(Builder.CreateAlloca(currentFunction->funParameters[i]->parType,0,currentFunction->funParameters[i]->parName),
-						         currentFunction->funParameters[i]->parType);
-					struct variableStruct *vartmp = new struct variableStruct ();
-					vartmp->varName = currentFunction->funParameters[i]->parName;
-					vartmp->varType = currentFunction->funParameters[i]->parType;
-					vartmp->isArray = false;
-					currentFunction->funVariables.push_back(vartmp);
-					Builder.CreateStore(tmpArg, currentFunction->NamedValues[currentFunction->funParameters[i]->parName]);
-					if (DI) {
-						di_variable(DI, cast<AllocaInst>(currentFunction->NamedValues[currentFunction->funParameters[i]->parName]),
-						            currentFunction->funParameters[i]->parName, functionLine(t),
-						            currentFunction->funParameters[i]->parType == i8, false, 0);
-					}
+				variableStruct *v = newVariableStruct(par->parName, par->parTypePure, par->isArray);
+				if (!par->isRef) {
+					AllocaInst *slot = Builder.CreateAlloca(par->parType, 0, par->parName);
+					Builder.CreateStore(tmpArg, slot);
+					addVariable(v, slot, par->parType);
+					if (DI) di_variable(DI, slot, par->parName, functionLine(t), par->parType == i8, false, 0);
 				}
 				else {
-					if (currentFunction->funParameters[i]->isArray)
-						currentFunction->NamedValues[currentFunction->funParameters[i]->parName] =
-							trackPtr(tmpArg, ArrayType::get(currentFunction->funParameters[i]->parTypePure,1));
-					else currentFunction->NamedValues[currentFunction->funParameters[i]->parName] =
-						trackPtr(tmpArg, currentFunction->funParameters[i]->parTypePure);
-					struct variableStruct *vartmp = new struct variableStruct ();
-					vartmp->varName = currentFunction->funParameters[i]->parName;
-					vartmp->varType = currentFunction->funParameters[i]->parTypePure;
-					vartmp->isArray = currentFunction->funParameters[i]->isArray;
-					currentFunction->funVariables.push_back(vartmp);
+					tmpArg->setName(par->parName);
+					addVariable(v, tmpArg, par->isArray ? (Type *)ArrayType::get(par->parTypePure, 1) : par->parTypePure);
 					if (DI) {
 						// A reference has no slot of its own, so give the
 						// debugger one that holds the address.
 						AllocaInst *slot = Builder.CreateAlloca(tmpArg->getType(), nullptr,
-						                                        std::string(currentFunction->funParameters[i]->parName) + ".addr");
+						                                        std::string(par->parName) + ".addr");
 						Builder.CreateStore(tmpArg, slot);
-						di_variable(DI, slot, currentFunction->funParameters[i]->parName, functionLine(t),
-						            currentFunction->funParameters[i]->parTypePure == i8,
-						            currentFunction->funParameters[i]->isArray, 0, true);
+						di_variable(DI, slot, par->parName, functionLine(t),
+						            par->parTypePure == i8, par->isArray, 0, true);
 					}
 				}
 			}
@@ -692,13 +730,10 @@ Value * ast_compile (ast t) {
 			currentFunction->children.push_back(newFunction);
 			currentFunction = newFunction;
 			//get parent's variables as hidden parameters
-			struct hiddenParameterStruct *parTmp;
-			for (size_t i = 0; i < currentFunction->father->funVariables.size(); i++) {
-				parTmp = new struct hiddenParameterStruct ();
-				parTmp->parName = currentFunction->father->funVariables[i]->varName;
-				parTmp->parType = currentFunction->father->funVariables[i]->varType;
-				parTmp->isArray = currentFunction->father->funVariables[i]->isArray;
-				currentFunction->funHiddenParameters.push_back(parTmp);
+			for (variableStruct *v : currentFunction->father->funVariables) {
+				hiddenParameterStruct *h = new hiddenParameterStruct ();
+				h->var = v;
+				currentFunction->funHiddenParameters.push_back(h);
 			}
 			//Create new Function Definition
 			Constant *c = nullptr;
@@ -735,57 +770,25 @@ Value * ast_compile (ast t) {
 	case CONST: {
 		return c32(t->num);
 	}
-	case CHAR: {
-		char* s = t->id;
-		char c;
-		if (s[0] == '\\' && strlen(s) > 1) {
-			if (s[1] == 'n') c = '\n';
-			else if (s[1] == 't') c = '\t';
-			else if (s[1] == 't') c = '\t';
-			else if (s[1] == 'r') c = '\r';
-			else if (s[1] == '0') c = '\0';
-			else if (s[1] == '\\') c = '\\';
-			else if (s[1] == '\'') c = '\'';
-			else if (s[1] == '\"') c = '\"';
-			else if (s[1] == 'x' && 3 < strlen(s)) c = hexToLetter(s[2],s[3]);
-			else c = s[0];
-		}
-		else c = s[0];
-		return c8(c);
-	}
+	case CHAR:
+		return c8(unescape(t->id)[0]);
 	case STRING: {
-		const char* s = t->id;
-		size_t len = strlen(s);
-		char* sNew = (char*) malloc(sizeof(char)*(len+1));
-		size_t sPos = 0;
-		size_t sNewPos = 0;
-		while (sPos < len) {
-			if (s[sPos] == '\\' && sPos+1 < len) {
-				if (s[sPos+1] == 'n')       {sNew[sNewPos] = '\n'; sPos += 2;}
-				else if (s[sPos+1] == 't')  {sNew[sNewPos] = '\t'; sPos += 2;}
-				else if (s[sPos+1] == 'r')  {sNew[sNewPos] = '\r'; sPos += 2;}
-				else if (s[sPos+1] == '0')  {sNew[sNewPos] = '\0'; sPos += 2;}
-				else if (s[sPos+1] == '\\') {sNew[sNewPos] = '\\'; sPos += 2;}
-				else if (s[sPos+1] == '\'') {sNew[sNewPos] = '\''; sPos += 2;}
-				else if (s[sPos+1] == '\"') {sNew[sNewPos] = '\"'; sPos += 2;}
-				else if (s[sPos+1] == 'x' && sPos+3 < len) {
-					sNew[sNewPos] = hexToLetter(s[sPos+2],s[sPos+3]);
-					sPos += 4;
-				}
-				else {sNew[sNewPos] = s[sPos]; sPos++;}
-			}
-			else {
-				sNew[sNewPos] = s[sPos];
-				sPos++;
-			}
-			sNewPos++;
-		}
-		sNew[sNewPos] = '\0';
-		Value *string = ConstantDataArray::getString(TheContext,StringRef(sNew));
-		Value *newString = trackPtr(Builder.CreateAlloca(ArrayType::get(i8,strlen(sNew)+1),0,"newString"),
-		                             ArrayType::get(i8,strlen(sNew)+1));
-		Builder.CreateStore(string, newString);
-		return newString;
+		// A string literal is an l-value of type byte[n+1] that the program
+		// may change (a callee can write through its reference), so each
+		// evaluation gets fresh contents. The storage is allocated once in
+		// the entry block, so a loop does not grow the stack.
+		std::string bytes = unescape(t->id);
+		bytes.push_back('\0');
+		ArrayType *type = ArrayType::get(i8, bytes.size());
+		GlobalVariable *contents = new GlobalVariable(*TheModule, type, true, GlobalValue::PrivateLinkage,
+		                                              ConstantDataArray::getString(TheContext, bytes, false), ".str");
+		contents->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+		contents->setAlignment(Align(1));
+		BasicBlock &entry = Builder.GetInsertBlock()->getParent()->getEntryBlock();
+		IRBuilder<> entryBuilder(&entry, entry.begin());
+		AllocaInst *slot = entryBuilder.CreateAlloca(type, nullptr, "newString");
+		Builder.CreateMemCpy(slot, MaybeAlign(1), contents, MaybeAlign(1), bytes.size());
+		return trackPtr(slot, type);
 	}
 	case BOOL: {
 		return c1(strcmp(t->id, "true") == 0);
@@ -795,21 +798,21 @@ Value * ast_compile (ast t) {
 	case EQUALS: case NOTEQUALS: case LESSEQUALS: case GREATEQUALS: case GREATER: case LESS: {
 		Value *v1 = rvalue(t->left);
 		Value *v2 = rvalue(t->right);
+		// byte holds 0 to 255, so it compares unsigned.
+		bool isByte = v1->getType()->isIntegerTy(8);
 		switch (t->k) {
 		case EQUALS: return Builder.CreateICmpEQ(v1, v2, "equalstmp");
 		case NOTEQUALS: return Builder.CreateICmpNE(v1, v2, "notequalstmp");
-		case LESSEQUALS: return Builder.CreateICmpSLE(v1, v2, "lessequalstmp");
-		case GREATEQUALS: return Builder.CreateICmpSGE(v1, v2, "greatequalstmp");
-		case GREATER: return Builder.CreateICmpSGT(v1, v2, "greatertmp");
-		default: return Builder.CreateICmpSLT(v1, v2, "lesstmp");
+		case LESSEQUALS: return isByte ? Builder.CreateICmpULE(v1, v2, "lessequalstmp") : Builder.CreateICmpSLE(v1, v2, "lessequalstmp");
+		case GREATEQUALS: return isByte ? Builder.CreateICmpUGE(v1, v2, "greatequalstmp") : Builder.CreateICmpSGE(v1, v2, "greatequalstmp");
+		case GREATER: return isByte ? Builder.CreateICmpUGT(v1, v2, "greatertmp") : Builder.CreateICmpSGT(v1, v2, "greatertmp");
+		default: return isByte ? Builder.CreateICmpULT(v1, v2, "lesstmp") : Builder.CreateICmpSLT(v1, v2, "lesstmp");
 		}
 	}
 	case NOT:
 		return Builder.CreateNot(ast_compile(t->left), "nottmp");
-	case AND:
-		return Builder.CreateAnd(ast_compile(t->left), ast_compile(t->right), "andtmp");
-	case OR:
-		return Builder.CreateOr(ast_compile(t->left), ast_compile(t->right), "ortmp");
+	case AND: case OR:
+		return compileLogical(t);
 	default: {}
 	}
 	return nullptr;
@@ -1004,6 +1007,15 @@ bool llvm_compile (ast t, const char *debugFile) {
 	tmpFunParameter->isRef = true; tmpFunParameter->isArray = true;
 	tmpFunParameter->parType = i8; tmpFunParameter->parTypePure = i8;
 	funLibrary[13].funParameters.push_back(tmpFunParameter);
+	// The runtime is C, and its byte arguments and results are unsigned
+	// char. Some ABIs leave the upper bits of a register undefined unless
+	// the IR says zeroext, and AArch64 macOS extends in the caller only.
+	for (int i = 0; i < 14; i++) {
+		Function *F = funLibrary[i].func;
+		for (Argument &arg : F->args())
+			if (arg.getType()->isIntegerTy(8)) arg.addAttr(Attribute::ZExt);
+		if (F->getReturnType()->isIntegerTy(8)) F->addRetAttr(Attribute::ZExt);
+	}
 	// Define and start the main function.
 	Value *c = TheModule->getOrInsertFunction("main", i32).getCallee();
 	Function* main = cast<Function>(c);
