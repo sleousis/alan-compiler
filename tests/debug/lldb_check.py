@@ -20,7 +20,9 @@ def main() -> int:
             print("FAIL alanc build -g exit", r.returncode)
             sys.stdout.write(r.stderr.decode("latin-1"))
             return 1
+        # Containers do not allow turning address randomization off.
         r = subprocess.run([a.lldb, "--batch",
+                            "-o", "settings set target.disable-aslr false",
                             "-o", "breakpoint set --file dbg.alan --line 5",
                             "-o", "run", "-o", "frame variable a b", "-o", "bt",
                             "-o", "continue", str(exe)],

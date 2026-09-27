@@ -208,9 +208,39 @@ jobs:
           $pdb = @(Get-ChildItem -Path $env:TEMP -Filter 'alan*.pdb')
           if ($pdb.Count -ne 0) { $pdb.FullName; exit 1 }
 
+      # The LLVM package for Windows has no LLDB, so take it from the
+      # installer and keep only the files LLDB needs.
+      - name: Cache LLDB (Windows)
+        id: lldb-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/lldb
+          key: lldb-${{ matrix.platform }}-${{ steps.versions.outputs.llvm }}
+
+      - name: Get LLDB (Windows)
+        if: runner.os == 'Windows' && steps.lldb-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $msiArch = if ('${{ matrix.platform }}' -eq 'windows-arm64') { 'woa64' } else { 'win64' }
+          $msi = Join-Path $env:RUNNER_TEMP 'llvm.msi'
+          $unpacked = Join-Path $env:RUNNER_TEMP 'llvm-msi'
+          Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.versions.outputs.llvm }}/LLVM-${{ steps.versions.outputs.llvm }}-$msiArch.msi" -OutFile $msi
+          # An administrative install only unpacks the files.
+          $p = Start-Process msiexec -ArgumentList '/a', $msi, '/qn', "TARGETDIR=$unpacked" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "msiexec failed with exit code $($p.ExitCode)" }
+          $bin = Join-Path $env:RUNNER_TEMP 'lldb\bin'
+          New-Item -ItemType Directory -Force $bin | Out-Null
+          foreach ($f in 'lldb.exe', 'liblldb.dll', 'lldb-server.exe', 'lldb-argdumper.exe') {
+            Copy-Item (Join-Path $unpacked "LLVM\bin\$f") $bin
+          }
+          Remove-Item -Recurse -Force $msi, $unpacked
+
       # A program built with -g must show LLDB its source lines, frames and
       # variables. Linux gets lldb from apt.llvm.org, macOS has Xcode's and
-      # Windows uses the one in the LLVM package that the build downloaded.
+      # Windows the one from the step above, which loads python3.dll from
+      # the Python that setup-python put on the PATH.
       - name: Test debug information
         env:
           ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
@@ -229,11 +259,8 @@ jobs:
             macos-*)
               lldb=lldb
               alanc="dist/${{ matrix.platform }}/bin/alanc" ;;
-            windows-x64)
-              lldb="$RUNNER_TEMP/clang+llvm-$llvm-x86_64-pc-windows-msvc/bin/lldb.exe"
-              alanc="dist/${{ matrix.platform }}/bin/alanc.exe" ;;
-            windows-arm64)
-              lldb="$RUNNER_TEMP/clang+llvm-$llvm-aarch64-pc-windows-msvc/bin/lldb.exe"
+            windows-*)
+              lldb="$RUNNER_TEMP/lldb/bin/lldb.exe"
               alanc="dist/${{ matrix.platform }}/bin/alanc.exe" ;;
           esac
           "$lldb" --version
