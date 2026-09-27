@@ -402,5 +402,19 @@
     "input": null,
     "opt": true,
     "expected": "regress/char_literals.txt"
+  },
+  {
+    "name": "long_blocks",
+    "file": "tests/regress/long_blocks.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/long_blocks.txt"
+  },
+  {
+    "name": "long_blocks",
+    "file": "tests/regress/long_blocks.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/long_blocks.txt"
   }
 ]

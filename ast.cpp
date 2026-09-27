@@ -403,7 +403,7 @@ static bool isArithmetic (kind k) {
 // Compiles a chain of arithmetic operators such as a + b - c * d. The
 // parser nests left-associative operators on the left, so walk that side
 // in a loop. Recursion there overflows the stack on long expressions.
-static Value *compileArithmetic (ast t) {
+static LLVM_ATTRIBUTE_NOINLINE Value *compileArithmetic (ast t) {
 	std::vector<ast> chain;
 	ast first = t;
 	while (isArithmetic(first->k)) {
@@ -433,7 +433,7 @@ static bool isLogical (kind k) {
 // Compiles a chain of & and | with short-circuit evaluation: the right
 // operand is evaluated only when the left one does not decide the result.
 // Chains nest on the left like arithmetic ones, so walk them in a loop.
-static Value *compileLogical (ast t) {
+static LLVM_ATTRIBUTE_NOINLINE Value *compileLogical (ast t) {
 	std::vector<ast> chain;
 	ast first = t;
 	while (isLogical(first->k)) {
@@ -463,62 +463,325 @@ static Value *compileLogical (ast t) {
 	return acc;
 }
 
+static LLVM_ATTRIBUTE_NOINLINE Value *compileWhile (ast t) {
+	Function *TheFunction = Builder.GetInsertBlock()->getParent();
+	BasicBlock *LoopBB = BasicBlock::Create(TheContext, "loop", TheFunction);
+	BasicBlock *InsideBB = BasicBlock::Create(TheContext, "inside", TheFunction);
+	BasicBlock *AfterBB = BasicBlock::Create(TheContext, "after", TheFunction);
+	Builder.CreateBr(LoopBB);
+	// The condition is evaluated before every iteration.
+	Builder.SetInsertPoint(LoopBB);
+	Value *cond = ast_compile(t->left);
+	Builder.CreateCondBr(cond, InsideBB, AfterBB);
+	Builder.SetInsertPoint(InsideBB);
+	ast_compile(t->right);
+	if (blockOpen()) {
+		if (DI) di_location(DI, Builder, statementLine(t));
+		Builder.CreateBr(LoopBB);
+	}
+	Builder.SetInsertPoint(AfterBB);
+	return nullptr;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileIf (ast t) {
+	Value *cond = ast_compile(t->left);
+	Function *TheFunction = Builder.GetInsertBlock()->getParent();
+	BasicBlock *InsideBB =
+		BasicBlock::Create(TheContext, "then", TheFunction);
+	BasicBlock *AfterBB =
+		BasicBlock::Create(TheContext, "endif", TheFunction);
+	Builder.CreateCondBr(cond, InsideBB, AfterBB);
+	Builder.SetInsertPoint(InsideBB);
+	ast_compile(t->right);
+	if (blockOpen()) Builder.CreateBr(AfterBB);
+	Builder.SetInsertPoint(AfterBB);
+	return nullptr;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileIfElse (ast t) {
+	Value *cond = ast_compile(t->left->left);
+	Function *TheFunction = Builder.GetInsertBlock()->getParent();
+	BasicBlock *InsideBB =
+		BasicBlock::Create(TheContext, "then", TheFunction);
+	BasicBlock *ElseInsideBB =
+		BasicBlock::Create(TheContext, "else", TheFunction);
+	BasicBlock *AfterBB =
+		BasicBlock::Create(TheContext, "endifelse", TheFunction);
+	Builder.CreateCondBr(cond, InsideBB, ElseInsideBB);
+	Builder.SetInsertPoint(InsideBB);
+	ast_compile(t->left->right);
+	if (blockOpen()) Builder.CreateBr(AfterBB);
+	Builder.SetInsertPoint(ElseInsideBB);
+	ast_compile(t->right);
+	if (blockOpen()) Builder.CreateBr(AfterBB);
+	Builder.SetInsertPoint(AfterBB);
+	return nullptr;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileReturn (ast t) {
+	// "return;" in a proc has the proc's TYPE node as its operand.
+	if (t->left->k == TYPE) Builder.CreateRetVoid();
+	else Builder.CreateRet(rvalue(t->left));
+	return nullptr;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileParameter (ast t) {
+	struct parameterStruct *tmpFunParameter = new struct parameterStruct ();
+	tmpFunParameter->parName = t->id;
+	if (t->left->type->kind == Type_tag::TYPE_INTEGER) {
+		tmpFunParameter->parType = i32;
+		tmpFunParameter->parTypePure = i32;
+	}
+	else if (t->left->type->kind == Type_tag::TYPE_CHAR) {
+		tmpFunParameter->parType = i8;
+		tmpFunParameter->parTypePure = i8;
+	}
+	tmpFunParameter->isRef = false;
+	tmpFunParameter->isArray = false;
+	currentFunction->funParameters.push_back(tmpFunParameter);
+	return nullptr;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileReferenceParameter (ast t) {
+	struct parameterStruct *tmpFunParameter = new struct parameterStruct ();
+	tmpFunParameter->parName = t->id;
+	//NEEDS FIX
+	if (t->left->type->kind == Type_tag::TYPE_INTEGER) {
+		tmpFunParameter->parType = llvm::PointerType::getUnqual(TheContext);
+		tmpFunParameter->parTypePure = i32;
+	}
+	else if (t->left->type->kind == Type_tag::TYPE_CHAR) {
+		tmpFunParameter->parType = llvm::PointerType::getUnqual(TheContext);
+		tmpFunParameter->parTypePure = i8;
+	}
+	if (t->left->k == TYPE) tmpFunParameter->isArray = false;
+	else if (t->left->k == TYPEARR) tmpFunParameter->isArray = true;
+	tmpFunParameter->isRef = true;
+	currentFunction->funParameters.push_back(tmpFunParameter);
+	return nullptr;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileVariable (ast t) {
+	Type *elemType = t->left->type->kind == Type_tag::TYPE_CHAR ? i8 : i32;
+	bool isArray = t->left->k == TYPEARR;
+	Type *objType = isArray ? (Type *)ArrayType::get(elemType, t->left->num) : elemType;
+	AllocaInst *slot = Builder.CreateAlloca(objType, 0, t->id);
+	if (isArray) zeroArray(slot, (elemType == i8 ? 1 : 4) * t->left->num);
+	addVariable(newVariableStruct(t->id, elemType, isArray), slot, objType);
+	if (DI) {
+		di_variable(DI, slot, t->id, t->line, elemType == i8, isArray,
+		            isArray ? t->left->num : 0);
+	}
+	return nullptr;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileElement (ast t) {
+	Value *index = rvalue(t->right);
+	Value *l = ast_compile(t->left);
+	Type *elemType = PointeeTypes[l]->getArrayElementType();
+	return trackPtr(Builder.CreateGEP(elemType, l, index, "tmpArr"), elemType);
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileCall (ast t) {
+	// ast_sem found the function the call names, by the scope rules.
+	bool isInLibrary = t->decl == NULL;
+	struct functionTable *tmp = isInLibrary ? findFunctionInLibrary(t->id) : functionOf[t->decl];
+	if (tmp == NULL) internal("no code for function %s", t->id);
+	std::vector<Value*> Args;
+	// Pass the variables of the enclosing functions that the callee can
+	// see. The caller sees each of them too, maybe under a shadowed name.
+	if (!isInLibrary) {
+		for (hiddenParameterStruct *h : tmp->funHiddenParameters) {
+			auto found = currentFunction->addresses.find(h->var);
+			if (found == currentFunction->addresses.end())
+				internal("%s cannot pass variable %s to %s", currentFunction->funName, h->var->varName, tmp->funName);
+			Args.push_back(found->second);
+		}
+	}
+	// The arguments nest on the right: SEQ(a, SEQ(b, c)).
+	ast iter = t->left;
+	for (size_t i = 0; iter != NULL; i++) {
+		ast arg = iter->k == SEQ ? iter->left : iter;
+		iter = iter->k == SEQ ? iter->right : NULL;
+		// A reference parameter gets the address of the l-value.
+		if (tmp->funParameters[i]->isRef) Args.push_back(ast_compile(arg));
+		else Args.push_back(rvalue(arg));
+	}
+	CallInst *call = Builder.CreateCall(tmp->func, Args);
+	// The zeroext of byte arguments and results must be on the call too.
+	call->setAttributes(tmp->func->getAttributes());
+	return call;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileFunction (ast t) {
+	if (!FuncDefLockEnabled) {
+		//Enable funcDef lock
+		FuncDefLockEnabled = true;
+		currentFunction = functionOf[t];
+		BasicBlock *BB = BasicBlock::Create(TheContext, "entry", currentFunction->func);
+		Builder.SetInsertPoint(BB);
+		if (DI) {
+			std::vector<std::pair<std::string, Type *>> params;
+			for (parameterStruct *p : currentFunction->funParameters)
+				params.emplace_back(p->parName, p->parType);
+			di_function(DI, currentFunction->func, t->id, functionLine(t), params);
+			di_location(DI, Builder, functionLine(t));
+		}
+		//set args names and initialization
+		Function::arg_iterator argss = currentFunction->func->arg_begin();
+		for (hiddenParameterStruct *h : currentFunction->funHiddenParameters) {
+			Value *tmpArg = argss++;
+			tmpArg->setName(h->var->varName);
+			// An array arrives as a pointer to its first element.
+			addVariable(h->var, tmpArg, h->var->isArray ? (Type *)ArrayType::get(h->var->varType, 1) : h->var->varType);
+		}
+		for (parameterStruct *par : currentFunction->funParameters) {
+			Value *tmpArg = argss++;
+			variableStruct *v = newVariableStruct(par->parName, par->parTypePure, par->isArray);
+			if (!par->isRef) {
+				AllocaInst *slot = Builder.CreateAlloca(par->parType, 0, par->parName);
+				Builder.CreateStore(tmpArg, slot);
+				addVariable(v, slot, par->parType);
+				if (DI) di_variable(DI, slot, par->parName, functionLine(t), par->parType == i8, false, 0);
+			}
+			else {
+				tmpArg->setName(par->parName);
+				addVariable(v, tmpArg, par->isArray ? (Type *)ArrayType::get(par->parTypePure, 1) : par->parTypePure);
+				if (DI) {
+					// A reference has no slot of its own, so give the
+					// debugger one that holds the address.
+					AllocaInst *slot = Builder.CreateAlloca(tmpArg->getType(), nullptr,
+					                                        std::string(par->parName) + ".addr");
+					Builder.CreateStore(tmpArg, slot);
+					di_variable(DI, slot, par->parName, functionLine(t),
+					            par->parTypePure == i8, par->isArray, 0, true);
+				}
+			}
+		}
+		//Emit the program code.
+		ast_compile(t->right);
+		// Falling off the end returns 0 from a function with a result.
+		if (blockOpen()) {
+			ast result = resultTypeNode(t);
+			if (result->k == PROC) Builder.CreateRetVoid();
+			else if (result->type->kind == Type_tag::TYPE_CHAR) Builder.CreateRet(c8(0));
+			else Builder.CreateRet(c32(0));
+		}
+		// The passes assume valid IR and can crash on anything else, so
+		// they run only on a function that verifies. Invalid IR fails
+		// the module's verification in llvm_compile.
+		if (verifyFunction(*currentFunction->func, &errs())) codegenFailed = true;
+		else if (opt) TheFPM->run(*currentFunction->func, *TheFAM);
+		//Disable funcDef lock
+		FuncDefLockEnabled = false;
+		//define dismissed funcDefs
+		ast poppedTmp;
+		while (currentFunction->funcDefsDismissed.size() > 0) {
+			poppedTmp = currentFunction->funcDefsDismissed.back();
+			currentFunction->funcDefsDismissed.pop_back();
+			ast_compile(poppedTmp);
+		}
+		// Nested functions are generated above, inside this one's scope.
+		di_end_function(DI);
+		currentFunction = currentFunction->father;
+	}
+	else {
+		currentFunction->funcDefsDismissed.push_back(t);
+		struct functionTable *newFunction = new struct functionTable ();
+		newFunction->funName = t->id;
+		newFunction->father = currentFunction;
+		currentFunction->children.push_back(newFunction);
+		functionOf[t] = newFunction;
+		currentFunction = newFunction;
+		//get parent's variables as hidden parameters
+		for (variableStruct *v : currentFunction->father->funVariables) {
+			hiddenParameterStruct *h = new hiddenParameterStruct ();
+			h->var = v;
+			currentFunction->funHiddenParameters.push_back(h);
+		}
+		//Create new Function Definition
+		Constant *c = nullptr;
+		//get function's parameters
+		ast_compile(t->left);
+		//define function type
+		ast result = resultTypeNode(t);
+		if (result->k == PROC) c = createFunction(t->id, Type::getVoidTy(TheContext));
+		else if (result->type->kind == Type_tag::TYPE_CHAR) c = createFunction(t->id, i8);
+		else c = createFunction(t->id, i32);
+		currentFunction->func = cast<Function>(c);
+		functionTable *firstFunction = currentFunction;
+		currentFunction = currentFunction->father;
+		//if this is the first function just run all the code
+		if (currentFunction->father == NULL) {
+			//close main function
+			std::vector<Value*> Args;
+			Builder.CreateCall(firstFunction->func, Args);
+			Builder.CreateRet(c32(0));
+			//run all the code
+			FuncDefLockEnabled = false;
+			ast_compile(t);
+		}
+	}
+	return nullptr;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileString (ast t) {
+	// A string literal is an l-value of type byte[n+1] that the program
+	// may change (a callee can write through its reference), so each
+	// evaluation gets fresh contents. The storage is allocated once in
+	// the entry block, so a loop does not grow the stack.
+	std::string bytes = unescape(t->id);
+	bytes.push_back('\0');
+	ArrayType *type = ArrayType::get(i8, bytes.size());
+	GlobalVariable *contents = new GlobalVariable(*TheModule, type, true, GlobalValue::PrivateLinkage,
+	                                              ConstantDataArray::getString(TheContext, bytes, false), ".str");
+	contents->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+	contents->setAlignment(Align(1));
+	BasicBlock &entry = Builder.GetInsertBlock()->getParent()->getEntryBlock();
+	IRBuilder<> entryBuilder(&entry, entry.begin());
+	AllocaInst *slot = entryBuilder.CreateAlloca(type, nullptr, "newString");
+	Builder.CreateMemCpy(slot, MaybeAlign(1), contents, MaybeAlign(1), bytes.size());
+	return trackPtr(slot, type);
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileComparison (ast t) {
+	Value *v1 = rvalue(t->left);
+	Value *v2 = rvalue(t->right);
+	// byte holds 0 to 255, so it compares unsigned.
+	bool isByte = v1->getType()->isIntegerTy(8);
+	switch (t->k) {
+	case EQUALS: return Builder.CreateICmpEQ(v1, v2, "equalstmp");
+	case NOTEQUALS: return Builder.CreateICmpNE(v1, v2, "notequalstmp");
+	case LESSEQUALS: return isByte ? Builder.CreateICmpULE(v1, v2, "lessequalstmp") : Builder.CreateICmpSLE(v1, v2, "lessequalstmp");
+	case GREATEQUALS: return isByte ? Builder.CreateICmpUGE(v1, v2, "greatequalstmp") : Builder.CreateICmpSGE(v1, v2, "greatequalstmp");
+	case GREATER: return isByte ? Builder.CreateICmpUGT(v1, v2, "greatertmp") : Builder.CreateICmpSGT(v1, v2, "greatertmp");
+	default: return isByte ? Builder.CreateICmpULT(v1, v2, "lesstmp") : Builder.CreateICmpSLT(v1, v2, "lesstmp");
+	}
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileName (ast t) {
+	auto found = currentFunction->NamedValues.find(t->id);
+	if (found == currentFunction->NamedValues.end()) {
+		error_prefix(t->line);
+		error("Variable \033[1;36m%s\033[0m not in scope.", t->id);
+	}
+	return found->second;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Value *compileChar (ast t) {
+	return c8(unescape(t->id)[0]);
+}
+
+// Nested statements recurse through ast_compile and ast_sem, so these two
+// keep small stack frames: each case with locals of its own is a function
+// that is not inlined.
 Value * ast_compile (ast t) {
 	if (t == nullptr) return nullptr;
 	if (DI && statementLine(t) > 0) di_location(DI, Builder, statementLine(t));
 	switch (t->k) {
-	case WHILE: {
-		Function *TheFunction = Builder.GetInsertBlock()->getParent();
-		BasicBlock *LoopBB = BasicBlock::Create(TheContext, "loop", TheFunction);
-		BasicBlock *InsideBB = BasicBlock::Create(TheContext, "inside", TheFunction);
-		BasicBlock *AfterBB = BasicBlock::Create(TheContext, "after", TheFunction);
-		Builder.CreateBr(LoopBB);
-		// The condition is evaluated before every iteration.
-		Builder.SetInsertPoint(LoopBB);
-		Value *cond = ast_compile(t->left);
-		Builder.CreateCondBr(cond, InsideBB, AfterBB);
-		Builder.SetInsertPoint(InsideBB);
-		ast_compile(t->right);
-		if (blockOpen()) {
-			if (DI) di_location(DI, Builder, statementLine(t));
-			Builder.CreateBr(LoopBB);
-		}
-		Builder.SetInsertPoint(AfterBB);
-		return nullptr;
-	}
-	case IF: {
-		Value *cond = ast_compile(t->left);
-		Function *TheFunction = Builder.GetInsertBlock()->getParent();
-		BasicBlock *InsideBB =
-			BasicBlock::Create(TheContext, "then", TheFunction);
-		BasicBlock *AfterBB =
-			BasicBlock::Create(TheContext, "endif", TheFunction);
-		Builder.CreateCondBr(cond, InsideBB, AfterBB);
-		Builder.SetInsertPoint(InsideBB);
-		ast_compile(t->right);
-		if (blockOpen()) Builder.CreateBr(AfterBB);
-		Builder.SetInsertPoint(AfterBB);
-		return nullptr;
-	}
-	case IFELSE: {
-		Value *cond = ast_compile(t->left->left);
-		Function *TheFunction = Builder.GetInsertBlock()->getParent();
-		BasicBlock *InsideBB =
-			BasicBlock::Create(TheContext, "then", TheFunction);
-		BasicBlock *ElseInsideBB =
-			BasicBlock::Create(TheContext, "else", TheFunction);
-		BasicBlock *AfterBB =
-			BasicBlock::Create(TheContext, "endifelse", TheFunction);
-		Builder.CreateCondBr(cond, InsideBB, ElseInsideBB);
-		Builder.SetInsertPoint(InsideBB);
-		ast_compile(t->left->right);
-		if (blockOpen()) Builder.CreateBr(AfterBB);
-		Builder.SetInsertPoint(ElseInsideBB);
-		ast_compile(t->right);
-		if (blockOpen()) Builder.CreateBr(AfterBB);
-		Builder.SetInsertPoint(AfterBB);
-		return nullptr;
-	}
+	case WHILE: return compileWhile(t);
+	case IF: return compileIf(t);
+	case IFELSE: return compileIfElse(t);
 	case SEQ: {
 		// A statement list nests on the right. Walk it in a loop, so long
 		// lists do not use up the stack. Statements after a return are
@@ -528,264 +791,34 @@ Value * ast_compile (ast t) {
 		if (t != nullptr && blockOpen()) ast_compile(t);
 		return nullptr;
 	}
-	case RET: {
-		// "return;" in a proc has the proc's TYPE node as its operand.
-		if (t->left->k == TYPE) Builder.CreateRetVoid();
-		else Builder.CreateRet(rvalue(t->left));
-		return nullptr;
-	}
-	case PAR: {
-		struct parameterStruct *tmpFunParameter = new struct parameterStruct ();
-		tmpFunParameter->parName = t->id;
-		if (t->left->type->kind == Type_tag::TYPE_INTEGER) {
-			tmpFunParameter->parType = i32;
-			tmpFunParameter->parTypePure = i32;
-		}
-		else if (t->left->type->kind == Type_tag::TYPE_CHAR) {
-			tmpFunParameter->parType = i8;
-			tmpFunParameter->parTypePure = i8;
-		}
-		tmpFunParameter->isRef = false;
-		tmpFunParameter->isArray = false;
-		currentFunction->funParameters.push_back(tmpFunParameter);
-		return nullptr;
-	}
-	case PARREF: {
-		struct parameterStruct *tmpFunParameter = new struct parameterStruct ();
-		tmpFunParameter->parName = t->id;
-		//NEEDS FIX
-		if (t->left->type->kind == Type_tag::TYPE_INTEGER) {
-			tmpFunParameter->parType = llvm::PointerType::getUnqual(TheContext);
-			tmpFunParameter->parTypePure = i32;
-		}
-		else if (t->left->type->kind == Type_tag::TYPE_CHAR) {
-			tmpFunParameter->parType = llvm::PointerType::getUnqual(TheContext);
-			tmpFunParameter->parTypePure = i8;
-		}
-		if (t->left->k == TYPE) tmpFunParameter->isArray = false;
-		else if (t->left->k == TYPEARR) tmpFunParameter->isArray = true;
-		tmpFunParameter->isRef = true;
-		currentFunction->funParameters.push_back(tmpFunParameter);
-		return nullptr;
-	}
+	case RET: return compileReturn(t);
+	case PAR: return compileParameter(t);
+	case PARREF: return compileReferenceParameter(t);
 	case PROC: {
 		return nullptr;
 	}
-	case VAR: {
-		Type *elemType = t->left->type->kind == Type_tag::TYPE_CHAR ? i8 : i32;
-		bool isArray = t->left->k == TYPEARR;
-		Type *objType = isArray ? (Type *)ArrayType::get(elemType, t->left->num) : elemType;
-		AllocaInst *slot = Builder.CreateAlloca(objType, 0, t->id);
-		if (isArray) zeroArray(slot, (elemType == i8 ? 1 : 4) * t->left->num);
-		addVariable(newVariableStruct(t->id, elemType, isArray), slot, objType);
-		if (DI) {
-			di_variable(DI, slot, t->id, t->line, elemType == i8, isArray,
-			            isArray ? t->left->num : 0);
-		}
-		return nullptr;
-	}
+	case VAR: return compileVariable(t);
 	case ASS: {
 		Value *r_value = rvalue(t->right);
 		Value *l = ast_compile(t->left);
 		Builder.CreateStore(r_value,l);
 		return nullptr;
 	}
-	case ARREXPR: {
-		Value *index = rvalue(t->right);
-		Value *l = ast_compile(t->left);
-		Type *elemType = PointeeTypes[l]->getArrayElementType();
-		return trackPtr(Builder.CreateGEP(elemType, l, index, "tmpArr"), elemType);
-	}
-	case FUNCALL: {
-		// ast_sem found the function the call names, by the scope rules.
-		bool isInLibrary = t->decl == NULL;
-		struct functionTable *tmp = isInLibrary ? findFunctionInLibrary(t->id) : functionOf[t->decl];
-		if (tmp == NULL) internal("no code for function %s", t->id);
-		std::vector<Value*> Args;
-		// Pass the variables of the enclosing functions that the callee can
-		// see. The caller sees each of them too, maybe under a shadowed name.
-		if (!isInLibrary) {
-			for (hiddenParameterStruct *h : tmp->funHiddenParameters) {
-				auto found = currentFunction->addresses.find(h->var);
-				if (found == currentFunction->addresses.end())
-					internal("%s cannot pass variable %s to %s", currentFunction->funName, h->var->varName, tmp->funName);
-				Args.push_back(found->second);
-			}
-		}
-		// The arguments nest on the right: SEQ(a, SEQ(b, c)).
-		ast iter = t->left;
-		for (size_t i = 0; iter != NULL; i++) {
-			ast arg = iter->k == SEQ ? iter->left : iter;
-			iter = iter->k == SEQ ? iter->right : NULL;
-			// A reference parameter gets the address of the l-value.
-			if (tmp->funParameters[i]->isRef) Args.push_back(ast_compile(arg));
-			else Args.push_back(rvalue(arg));
-		}
-		CallInst *call = Builder.CreateCall(tmp->func, Args);
-		// The zeroext of byte arguments and results must be on the call too.
-		call->setAttributes(tmp->func->getAttributes());
-		return call;
-	}
-	case FUNCDEF: {
-		if (!FuncDefLockEnabled) {
-			//Enable funcDef lock
-			FuncDefLockEnabled = true;
-			currentFunction = functionOf[t];
-			BasicBlock *BB = BasicBlock::Create(TheContext, "entry", currentFunction->func);
-			Builder.SetInsertPoint(BB);
-			if (DI) {
-				std::vector<std::pair<std::string, Type *>> params;
-				for (parameterStruct *p : currentFunction->funParameters)
-					params.emplace_back(p->parName, p->parType);
-				di_function(DI, currentFunction->func, t->id, functionLine(t), params);
-				di_location(DI, Builder, functionLine(t));
-			}
-			//set args names and initialization
-			Function::arg_iterator argss = currentFunction->func->arg_begin();
-			for (hiddenParameterStruct *h : currentFunction->funHiddenParameters) {
-				Value *tmpArg = argss++;
-				tmpArg->setName(h->var->varName);
-				// An array arrives as a pointer to its first element.
-				addVariable(h->var, tmpArg, h->var->isArray ? (Type *)ArrayType::get(h->var->varType, 1) : h->var->varType);
-			}
-			for (parameterStruct *par : currentFunction->funParameters) {
-				Value *tmpArg = argss++;
-				variableStruct *v = newVariableStruct(par->parName, par->parTypePure, par->isArray);
-				if (!par->isRef) {
-					AllocaInst *slot = Builder.CreateAlloca(par->parType, 0, par->parName);
-					Builder.CreateStore(tmpArg, slot);
-					addVariable(v, slot, par->parType);
-					if (DI) di_variable(DI, slot, par->parName, functionLine(t), par->parType == i8, false, 0);
-				}
-				else {
-					tmpArg->setName(par->parName);
-					addVariable(v, tmpArg, par->isArray ? (Type *)ArrayType::get(par->parTypePure, 1) : par->parTypePure);
-					if (DI) {
-						// A reference has no slot of its own, so give the
-						// debugger one that holds the address.
-						AllocaInst *slot = Builder.CreateAlloca(tmpArg->getType(), nullptr,
-						                                        std::string(par->parName) + ".addr");
-						Builder.CreateStore(tmpArg, slot);
-						di_variable(DI, slot, par->parName, functionLine(t),
-						            par->parTypePure == i8, par->isArray, 0, true);
-					}
-				}
-			}
-			//Emit the program code.
-			ast_compile(t->right);
-			// Falling off the end returns 0 from a function with a result.
-			if (blockOpen()) {
-				ast result = resultTypeNode(t);
-				if (result->k == PROC) Builder.CreateRetVoid();
-				else if (result->type->kind == Type_tag::TYPE_CHAR) Builder.CreateRet(c8(0));
-				else Builder.CreateRet(c32(0));
-			}
-			// The passes assume valid IR and can crash on anything else, so
-			// they run only on a function that verifies. Invalid IR fails
-			// the module's verification in llvm_compile.
-			if (verifyFunction(*currentFunction->func, &errs())) codegenFailed = true;
-			else if (opt) TheFPM->run(*currentFunction->func, *TheFAM);
-			//Disable funcDef lock
-			FuncDefLockEnabled = false;
-			//define dismissed funcDefs
-			ast poppedTmp;
-			while (currentFunction->funcDefsDismissed.size() > 0) {
-				poppedTmp = currentFunction->funcDefsDismissed.back();
-				currentFunction->funcDefsDismissed.pop_back();
-				ast_compile(poppedTmp);
-			}
-			// Nested functions are generated above, inside this one's scope.
-			di_end_function(DI);
-			currentFunction = currentFunction->father;
-		}
-		else {
-			currentFunction->funcDefsDismissed.push_back(t);
-			struct functionTable *newFunction = new struct functionTable ();
-			newFunction->funName = t->id;
-			newFunction->father = currentFunction;
-			currentFunction->children.push_back(newFunction);
-			functionOf[t] = newFunction;
-			currentFunction = newFunction;
-			//get parent's variables as hidden parameters
-			for (variableStruct *v : currentFunction->father->funVariables) {
-				hiddenParameterStruct *h = new hiddenParameterStruct ();
-				h->var = v;
-				currentFunction->funHiddenParameters.push_back(h);
-			}
-			//Create new Function Definition
-			Constant *c = nullptr;
-			//get function's parameters
-			ast_compile(t->left);
-			//define function type
-			ast result = resultTypeNode(t);
-			if (result->k == PROC) c = createFunction(t->id, Type::getVoidTy(TheContext));
-			else if (result->type->kind == Type_tag::TYPE_CHAR) c = createFunction(t->id, i8);
-			else c = createFunction(t->id, i32);
-			currentFunction->func = cast<Function>(c);
-			functionTable *firstFunction = currentFunction;
-			currentFunction = currentFunction->father;
-			//if this is the first function just run all the code
-			if (currentFunction->father == NULL) {
-				//close main function
-				std::vector<Value*> Args;
-				Builder.CreateCall(firstFunction->func, Args);
-				Builder.CreateRet(c32(0));
-				//run all the code
-				FuncDefLockEnabled = false;
-				ast_compile(t);
-			}
-		}
-		return nullptr;
-	}
-	case ID: {
-		if (currentFunction->NamedValues.find(t->id) == currentFunction->NamedValues.end()) {
-			error_prefix(t->line);
-			error("Variable \033[1;36m%s\033[0m not in scope.", t->id);
-		}
-		return currentFunction->NamedValues[t->id];
-	}
+	case ARREXPR: return compileElement(t);
+	case FUNCALL: return compileCall(t);
+	case FUNCDEF: return compileFunction(t);
+	case ID: return compileName(t);
 	case CONST: {
 		return c32(t->num);
 	}
-	case CHAR:
-		return c8(unescape(t->id)[0]);
-	case STRING: {
-		// A string literal is an l-value of type byte[n+1] that the program
-		// may change (a callee can write through its reference), so each
-		// evaluation gets fresh contents. The storage is allocated once in
-		// the entry block, so a loop does not grow the stack.
-		std::string bytes = unescape(t->id);
-		bytes.push_back('\0');
-		ArrayType *type = ArrayType::get(i8, bytes.size());
-		GlobalVariable *contents = new GlobalVariable(*TheModule, type, true, GlobalValue::PrivateLinkage,
-		                                              ConstantDataArray::getString(TheContext, bytes, false), ".str");
-		contents->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
-		contents->setAlignment(Align(1));
-		BasicBlock &entry = Builder.GetInsertBlock()->getParent()->getEntryBlock();
-		IRBuilder<> entryBuilder(&entry, entry.begin());
-		AllocaInst *slot = entryBuilder.CreateAlloca(type, nullptr, "newString");
-		Builder.CreateMemCpy(slot, MaybeAlign(1), contents, MaybeAlign(1), bytes.size());
-		return trackPtr(slot, type);
-	}
+	case CHAR: return compileChar(t);
+	case STRING: return compileString(t);
 	case BOOL: {
 		return c1(strcmp(t->id, "true") == 0);
 	}
 	case PLUS: case MINUS: case TIMES: case DIV: case MOD:
 		return compileArithmetic(t);
-	case EQUALS: case NOTEQUALS: case LESSEQUALS: case GREATEQUALS: case GREATER: case LESS: {
-		Value *v1 = rvalue(t->left);
-		Value *v2 = rvalue(t->right);
-		// byte holds 0 to 255, so it compares unsigned.
-		bool isByte = v1->getType()->isIntegerTy(8);
-		switch (t->k) {
-		case EQUALS: return Builder.CreateICmpEQ(v1, v2, "equalstmp");
-		case NOTEQUALS: return Builder.CreateICmpNE(v1, v2, "notequalstmp");
-		case LESSEQUALS: return isByte ? Builder.CreateICmpULE(v1, v2, "lessequalstmp") : Builder.CreateICmpSLE(v1, v2, "lessequalstmp");
-		case GREATEQUALS: return isByte ? Builder.CreateICmpUGE(v1, v2, "greatequalstmp") : Builder.CreateICmpSGE(v1, v2, "greatequalstmp");
-		case GREATER: return isByte ? Builder.CreateICmpUGT(v1, v2, "greatertmp") : Builder.CreateICmpSGT(v1, v2, "greatertmp");
-		default: return isByte ? Builder.CreateICmpULT(v1, v2, "lesstmp") : Builder.CreateICmpSLT(v1, v2, "lesstmp");
-		}
-	}
+	case EQUALS: case NOTEQUALS: case LESSEQUALS: case GREATEQUALS: case GREATER: case LESS: return compileComparison(t);
 	case NOT:
 		return Builder.CreateNot(ast_compile(t->left), "nottmp");
 	case AND: case OR:
@@ -1058,6 +1091,183 @@ static void checkOperands (ast op) {
 	}
 }
 
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkReturn (ast t, SymbolEntry *f) {
+	//printf("%s\n",kinds[t->k]);
+	if (f->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("case RET error!");}
+	Type_T functionType = f->u.eFunction.resultType;
+	if (functionType->kind == Type_tag::TYPE_VOID && t->left->k != TYPE) {
+		error_prefix(t->line);
+		error("Function \033[1;36m%s\033[0m is a proc, so its return cannot have a value.", f->id);
+	}
+	Type_T tempType = ast_sem(t->left,f);
+	if (tempType->isArray != 0) {
+		error_prefix(t->line);
+		error("Can't return whole array.");
+	}
+	if (!equalType(functionType, tempType)) {
+		error_prefix(t->line);
+		error("Function %s must return %s.", f->id, types[functionType->kind]);
+	}
+	return NULL;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkVariable (ast t, SymbolEntry *f) {
+	// A parameter's array type has no size, a variable's must be positive.
+	if (t->left->k == TYPEARR && t->left->num <= 0) {
+		error_prefix(t->line);
+		error("Array size must be a positive int.");
+	}
+	newVariable(t->id, ast_sem(t->left,f));
+	return NULL;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkAssignment (ast t, SymbolEntry *f) {
+	//printf("%s: =\n",kinds[t->k]);
+	Type_T type1 = ast_sem(t->left,f);
+	Type_T type2 = ast_sem(t->right,f);
+	if (type1->isArray != 0 || type2->isArray != 0) {
+		error_prefix(t->line);
+		error("Can't assign whole arrays or strings by = operator.");
+	}
+	if (!equalType(type1, type2)) {
+		error_prefix(t->line);
+		error("Can't assign different types (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[type1->kind],types[type2->kind]);
+	}
+	return NULL;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkElement (ast t, SymbolEntry *f) {
+	//printf("%s\n",kinds[t->k]);
+	Type_T retType = new Type_tag();
+	Type_T tempType = ast_sem(t->left,f);
+	retType->isArray = tempType->isArray;
+	retType->kind = tempType->kind;
+	retType->size = tempType->size;
+	if (retType->isArray == 0) {
+		error_prefix(t->line);
+		error ("Expected array.");
+	}
+	t->id = t->left->id;
+	retType->isArray = 0;
+	t->type = retType;
+	Type_T tempType2 = ast_sem(t->right,f);
+	if (tempType2->kind != Type_tag::TYPE_INTEGER || tempType2->isArray) {
+		error_prefix(t->line);
+		error ("Index of array must be an int.");
+	}
+	return retType;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkCall (ast t, SymbolEntry *f) {
+	SymbolEntry *theFunction = lookupEntry(t->id,LOOKUP_ALL_SCOPES,false);
+	if (theFunction == NULL) {
+		theFunction = lookupLibrary(t->id);
+		if (theFunction == NULL) {
+			error_prefix(t->line);
+			error("Function \033[1;36m%s\033[0m is not declared in this Scope.", t->id);
+		}
+	}
+	if (theFunction->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("\033[1;36m%s\033[0m is not a function.", t->id);}
+	// NULL for a library function, which has no FUNCDEF.
+	auto decl = funcDecls.find(theFunction);
+	t->decl = decl == funcDecls.end() ? NULL : decl->second;
+	t->type = theFunction->u.eFunction.resultType;
+	SymbolEntry *param = theFunction->u.eFunction.firstArgument;
+	if (param == NULL && t->left != NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m cannot have any Parameters.", t->id);}
+	if (param != NULL && t->left == NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m must have Parameters.", t->id);}
+	// The arguments nest on the right: SEQ(a, SEQ(b, c)).
+	for (ast iter = t->left; iter != NULL; param = param->u.eParameter.next) {
+		ast arg = iter->k == SEQ ? iter->left : iter;
+		iter = iter->k == SEQ ? iter->right : NULL;
+		if (param == NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", t->id);}
+		Type_T argType = ast_sem(arg, f);
+		Type_T parType = param->u.eParameter.type;
+		if (argType->isArray != parType->isArray) {
+			error_prefix(t->line);
+			if (parType->isArray) error("\033[1;36m%s\033[0m Parameter Type Mismatch (an array is expected).", param->id);
+			else error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).", param->id);
+		}
+		if (!equalType(argType, parType)) {
+			error_prefix(t->line);
+			error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", param->id, typeName(argType), typeName(parType));
+		}
+		// Spec 1.4.4: a reference parameter needs an l-value: a variable,
+		// a parameter, an array element or a string literal.
+		if (param->u.eParameter.mode == PASS_BY_REFERENCE && arg->k != ID && arg->k != ARREXPR && arg->k != STRING) {
+			error_prefix(t->line);
+			error("Only L-values can be passed by reference (parameter \033[1;36m%s\033[0m).", param->id);
+		}
+	}
+	if (param != NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", param->id);}
+	return t->type;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkFunction (ast t, SymbolEntry *f) {
+	// As in Pascal, the name of a function belongs to the enclosing
+	// scope, and its parameters and locals to a scope of its own. The
+	// program's function gets an outer scope for its name.
+	bool outermost = currentScope == NULL;
+	if (outermost) openScope();
+	// A duplicate name is reported on the line of the header.
+	linecount = functionLine(t);
+	// The program starts by calling this function with no arguments.
+	if (outermost && t->left != NULL) {
+		error_prefix(functionLine(t));
+		error("The main function \033[1;36m%s\033[0m cannot have parameters.", t->id);
+	}
+	SymbolEntry *theFunction = newFunction(t->id);
+	funcDecls[theFunction] = t;
+	openScope();
+	ast_sem(t->left, theFunction);
+	Type_T resultType = ast_sem(resultTypeNode(t),NULL);
+	theFunction->u.eFunction.resultType = resultType;
+	ast_sem(t->right, theFunction);
+	endFunctionHeader(theFunction, resultType);
+	closeScope();
+	if (outermost) closeScope();
+	return NULL;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkName (ast t, SymbolEntry *f) {
+	SymbolEntry *entry = lookupEntry(t->id,LOOKUP_CURRENT_SCOPE,false);
+	if (entry == NULL) {
+		error_prefix(t->line);
+		error("Identifier \033[1;36m%s\033[0m not found.", t->id);
+	}
+	switch (entry->entryType) {
+	case ENTRY_VARIABLE: t->type = entry->u.eVariable.type; break;
+	case ENTRY_PARAMETER: t->type = entry->u.eParameter.type; break;
+	case ENTRY_CONSTANT: t->type = entry->u.eConstant.type; break;
+	case ENTRY_TEMPORARY: t->type = entry->u.eTemporary.type; break;
+	case ENTRY_FUNCTION:
+		// Spec 1.4.1: only variables and parameters are l-values, and a
+		// function is used only by calling it.
+		error_prefix(t->line);
+		error("\033[1;36m%s\033[0m is a function, so it needs arguments in parentheses.", t->id);
+	}
+	return t->type;
+}
+
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkArithmetic (ast t, SymbolEntry *f) {
+	// Walk the left side of a chain such as a + b - c in a loop, as
+	// ast_compile does, so long expressions do not use up the stack.
+	std::vector<ast> chain;
+	ast first = t;
+	while (isArithmetic(first->k)) {
+		chain.push_back(first);
+		first = first->left;
+	}
+	ast_sem(first,f);
+	for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+		ast op = *it;
+		linecount = op->line;
+		ast_sem(op->right,f);
+		checkOperands(op);
+		op->type = op->left->type;
+	}
+	return t->type;
+}
+
 Type_T ast_sem (ast t, SymbolEntry * f) {
 	if (t == NULL) return NULL;
 	// Symbol table errors have no line of their own, so they use this one.
@@ -1096,25 +1306,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t, f);
 		return NULL;
 	}
-	case RET: {
-		//printf("%s\n",kinds[t->k]);
-		if (f->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("case RET error!");}
-		Type_T functionType = f->u.eFunction.resultType;
-		if (functionType->kind == Type_tag::TYPE_VOID && t->left->k != TYPE) {
-			error_prefix(t->line);
-			error("Function \033[1;36m%s\033[0m is a proc, so its return cannot have a value.", f->id);
-		}
-		Type_T tempType = ast_sem(t->left,f);
-		if (tempType->isArray != 0) {
-			error_prefix(t->line);
-			error("Can't return whole array.");
-		}
-		if (!equalType(functionType, tempType)) {
-			error_prefix(t->line);
-			error("Function %s must return %s.", f->id, types[functionType->kind]);
-		}
-		return NULL;
-	}
+	case RET: return checkReturn(t, f);
 	case PAR: {
 		if (t->left->k == TYPEARR) {
 			error_prefix(t->line);
@@ -1143,137 +1335,12 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		//printf("%s: %s\n",kinds[t->k] ,"VOID");
 		return typeVoid;
 	}
-	case VAR: {
-		// A parameter's array type has no size, a variable's must be positive.
-		if (t->left->k == TYPEARR && t->left->num <= 0) {
-			error_prefix(t->line);
-			error("Array size must be a positive int.");
-		}
-		newVariable(t->id, ast_sem(t->left,f));
-		return NULL;
-	}
-	case ASS: {
-		//printf("%s: =\n",kinds[t->k]);
-		Type_T type1 = ast_sem(t->left,f);
-		Type_T type2 = ast_sem(t->right,f);
-		if (type1->isArray != 0 || type2->isArray != 0) {
-			error_prefix(t->line);
-			error("Can't assign whole arrays or strings by = operator.");
-		}
-		if (!equalType(type1, type2)) {
-			error_prefix(t->line);
-			error("Can't assign different types (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[type1->kind],types[type2->kind]);
-		}
-		return NULL;
-	}
-	case ARREXPR: {
-		//printf("%s\n",kinds[t->k]);
-		Type_T retType = new Type_tag();
-		Type_T tempType = ast_sem(t->left,f);
-		retType->isArray = tempType->isArray;
-		retType->kind = tempType->kind;
-		retType->size = tempType->size;
-		if (retType->isArray == 0) {
-			error_prefix(t->line);
-			error ("Expected array.");
-		}
-		t->id = t->left->id;
-		retType->isArray = 0;
-		t->type = retType;
-		Type_T tempType2 = ast_sem(t->right,f);
-		if (tempType2->kind != Type_tag::TYPE_INTEGER || tempType2->isArray) {
-			error_prefix(t->line);
-			error ("Index of array must be an int.");
-		}
-		return retType;
-	}
-	case FUNCALL: {
-		SymbolEntry *theFunction = lookupEntry(t->id,LOOKUP_ALL_SCOPES,false);
-		if (theFunction == NULL) {
-			theFunction = lookupLibrary(t->id);
-			if (theFunction == NULL) {
-				error_prefix(t->line);
-				error("Function \033[1;36m%s\033[0m is not declared in this Scope.", t->id);
-			}
-		}
-		if (theFunction->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("\033[1;36m%s\033[0m is not a function.", t->id);}
-		// NULL for a library function, which has no FUNCDEF.
-		auto decl = funcDecls.find(theFunction);
-		t->decl = decl == funcDecls.end() ? NULL : decl->second;
-		t->type = theFunction->u.eFunction.resultType;
-		SymbolEntry *param = theFunction->u.eFunction.firstArgument;
-		if (param == NULL && t->left != NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m cannot have any Parameters.", t->id);}
-		if (param != NULL && t->left == NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m must have Parameters.", t->id);}
-		// The arguments nest on the right: SEQ(a, SEQ(b, c)).
-		for (ast iter = t->left; iter != NULL; param = param->u.eParameter.next) {
-			ast arg = iter->k == SEQ ? iter->left : iter;
-			iter = iter->k == SEQ ? iter->right : NULL;
-			if (param == NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", t->id);}
-			Type_T argType = ast_sem(arg, f);
-			Type_T parType = param->u.eParameter.type;
-			if (argType->isArray != parType->isArray) {
-				error_prefix(t->line);
-				if (parType->isArray) error("\033[1;36m%s\033[0m Parameter Type Mismatch (an array is expected).", param->id);
-				else error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).", param->id);
-			}
-			if (!equalType(argType, parType)) {
-				error_prefix(t->line);
-				error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", param->id, typeName(argType), typeName(parType));
-			}
-			// Spec 1.4.4: a reference parameter needs an l-value: a variable,
-			// a parameter, an array element or a string literal.
-			if (param->u.eParameter.mode == PASS_BY_REFERENCE && arg->k != ID && arg->k != ARREXPR && arg->k != STRING) {
-				error_prefix(t->line);
-				error("Only L-values can be passed by reference (parameter \033[1;36m%s\033[0m).", param->id);
-			}
-		}
-		if (param != NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", param->id);}
-		return t->type;
-	}
-	case FUNCDEF: {
-		// As in Pascal, the name of a function belongs to the enclosing
-		// scope, and its parameters and locals to a scope of its own. The
-		// program's function gets an outer scope for its name.
-		bool outermost = currentScope == NULL;
-		if (outermost) openScope();
-		// A duplicate name is reported on the line of the header.
-		linecount = functionLine(t);
-		// The program starts by calling this function with no arguments.
-		if (outermost && t->left != NULL) {
-			error_prefix(functionLine(t));
-			error("The main function \033[1;36m%s\033[0m cannot have parameters.", t->id);
-		}
-		SymbolEntry *theFunction = newFunction(t->id);
-		funcDecls[theFunction] = t;
-		openScope();
-		ast_sem(t->left, theFunction);
-		Type_T resultType = ast_sem(resultTypeNode(t),NULL);
-		theFunction->u.eFunction.resultType = resultType;
-		ast_sem(t->right, theFunction);
-		endFunctionHeader(theFunction, resultType);
-		closeScope();
-		if (outermost) closeScope();
-		return NULL;
-	}
-	case ID: {
-		SymbolEntry *entry = lookupEntry(t->id,LOOKUP_CURRENT_SCOPE,false);
-		if (entry == NULL) {
-			error_prefix(t->line);
-			error("Identifier \033[1;36m%s\033[0m not found.", t->id);
-		}
-		switch (entry->entryType) {
-		case ENTRY_VARIABLE: t->type = entry->u.eVariable.type; break;
-		case ENTRY_PARAMETER: t->type = entry->u.eParameter.type; break;
-		case ENTRY_CONSTANT: t->type = entry->u.eConstant.type; break;
-		case ENTRY_TEMPORARY: t->type = entry->u.eTemporary.type; break;
-		case ENTRY_FUNCTION:
-			// Spec 1.4.1: only variables and parameters are l-values, and a
-			// function is used only by calling it.
-			error_prefix(t->line);
-			error("\033[1;36m%s\033[0m is a function, so it needs arguments in parentheses.", t->id);
-		}
-		return t->type;
-	}
+	case VAR: return checkVariable(t, f);
+	case ASS: return checkAssignment(t, f);
+	case ARREXPR: return checkElement(t, f);
+	case FUNCALL: return checkCall(t, f);
+	case FUNCDEF: return checkFunction(t, f);
+	case ID: return checkName(t, f);
 	case CONST: {
 		//printf("%s: %d\n",kinds[t->k] ,t->num);
 		return t->type;
@@ -1293,25 +1360,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		t->type = typeBoolean;
 		return t->type;
 	}
-	case PLUS: case MINUS: case TIMES: case DIV: case MOD: {
-		// Walk the left side of a chain such as a + b - c in a loop, as
-		// ast_compile does, so long expressions do not use up the stack.
-		std::vector<ast> chain;
-		ast first = t;
-		while (isArithmetic(first->k)) {
-			chain.push_back(first);
-			first = first->left;
-		}
-		ast_sem(first,f);
-		for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-			ast op = *it;
-			linecount = op->line;
-			ast_sem(op->right,f);
-			checkOperands(op);
-			op->type = op->left->type;
-		}
-		return t->type;
-	}
+	case PLUS: case MINUS: case TIMES: case DIV: case MOD: return checkArithmetic(t, f);
 	case EQUALS: case NOTEQUALS: case LESSEQUALS: case GREATEQUALS: case GREATER: case LESS: {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
@@ -1353,12 +1402,12 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 void createLibrary(){
 
 	library[0] = (SymbolEntry *)new(SymbolEntry);
-	library[0]->id = (char *) new char* [strlen("writeInteger") + 1];
+	library[0]->id = new char [strlen("writeInteger") + 1];
 	strcpy((library[0]->id), "writeInteger");
 	library[0]->entryType = ENTRY_FUNCTION;
 	library[0]->u.eFunction.resultType = typeVoid;
 	library[0]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[0]->u.eFunction.firstArgument->id = (char *) new char* [strlen("n") + 1];
+	library[0]->u.eFunction.firstArgument->id = new char [strlen("n") + 1];
 	strcpy((library[0]->u.eFunction.firstArgument->id), "n");
 	library[0]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[0]->u.eFunction.firstArgument->u.eParameter.type = createInt();
@@ -1368,12 +1417,12 @@ void createLibrary(){
 	library[0]->u.eFunction.lastArgument = library[0]->u.eFunction.firstArgument;
 
 	library[1] = (SymbolEntry *)new(SymbolEntry);
-	library[1]->id = (char *) new char* [strlen("writeByte") + 1];
+	library[1]->id = new char [strlen("writeByte") + 1];
 	strcpy((library[1]->id), "writeByte");
 	library[1]->entryType = ENTRY_FUNCTION;
 	library[1]->u.eFunction.resultType = typeVoid;
 	library[1]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[1]->u.eFunction.firstArgument->id = (char *) new char* [strlen("b") + 1];
+	library[1]->u.eFunction.firstArgument->id = new char [strlen("b") + 1];
 	strcpy((library[1]->u.eFunction.firstArgument->id), "b");
 	library[1]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[1]->u.eFunction.firstArgument->u.eParameter.type = createChar();
@@ -1383,12 +1432,12 @@ void createLibrary(){
 	library[1]->u.eFunction.lastArgument = library[1]->u.eFunction.firstArgument;
 
 	library[2] = (SymbolEntry *)new(SymbolEntry);
-	library[2]->id = (char *) new char* [strlen("writeChar") + 1];
+	library[2]->id = new char [strlen("writeChar") + 1];
 	strcpy((library[2]->id), "writeChar");
 	library[2]->entryType = ENTRY_FUNCTION;
 	library[2]->u.eFunction.resultType = typeVoid;
 	library[2]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[2]->u.eFunction.firstArgument->id = (char *) new char* [strlen("b") + 1];
+	library[2]->u.eFunction.firstArgument->id = new char [strlen("b") + 1];
 	strcpy((library[2]->u.eFunction.firstArgument->id), "b");
 	library[2]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[2]->u.eFunction.firstArgument->u.eParameter.type = createChar();
@@ -1398,12 +1447,12 @@ void createLibrary(){
 	library[2]->u.eFunction.lastArgument = library[2]->u.eFunction.firstArgument;
 
 	library[3] = (SymbolEntry *)new(SymbolEntry);
-	library[3]->id = (char *) new char* [strlen("writeString") + 1];
+	library[3]->id = new char [strlen("writeString") + 1];
 	strcpy((library[3]->id), "writeString");
 	library[3]->entryType = ENTRY_FUNCTION;
 	library[3]->u.eFunction.resultType = typeVoid;
 	library[3]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[3]->u.eFunction.firstArgument->id = (char *) new char* [strlen("s") + 1];
+	library[3]->u.eFunction.firstArgument->id = new char [strlen("s") + 1];
 	strcpy((library[3]->u.eFunction.firstArgument->id), "s");
 	library[3]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[3]->u.eFunction.firstArgument->u.eParameter.type = createCharArr();
@@ -1413,40 +1462,40 @@ void createLibrary(){
 	library[3]->u.eFunction.lastArgument = library[3]->u.eFunction.firstArgument;
 
 	library[4] = (SymbolEntry *)new(SymbolEntry);
-	library[4]->id = (char *) new char* [strlen("readInteger") + 1];
+	library[4]->id = new char [strlen("readInteger") + 1];
 	strcpy((library[4]->id), "readInteger");
 	library[4]->entryType = ENTRY_FUNCTION;
 	library[4]->u.eFunction.resultType = createInt();
 	library[4]->u.eFunction.firstArgument = library[4]->u.eFunction.lastArgument = NULL;
 
 	library[5] = (SymbolEntry *)new(SymbolEntry);
-	library[5]->id = (char *) new char* [strlen("readByte") + 1];
+	library[5]->id = new char [strlen("readByte") + 1];
 	strcpy((library[5]->id), "readByte");
 	library[5]->entryType = ENTRY_FUNCTION;
 	library[5]->u.eFunction.resultType = createChar();
 	library[5]->u.eFunction.firstArgument = library[5]->u.eFunction.lastArgument = NULL;
 
 	library[6] = (SymbolEntry *)new(SymbolEntry);
-	library[6]->id = (char *) new char* [strlen("readChar") + 1];
+	library[6]->id = new char [strlen("readChar") + 1];
 	strcpy((library[6]->id), "readChar");
 	library[6]->entryType = ENTRY_FUNCTION;
 	library[6]->u.eFunction.resultType = createChar();
 	library[6]->u.eFunction.firstArgument = library[6]->u.eFunction.lastArgument = NULL;
 
 	library[7] = (SymbolEntry *)new(SymbolEntry);
-	library[7]->id = (char *) new char* [strlen("readString") + 1];
+	library[7]->id = new char [strlen("readString") + 1];
 	strcpy((library[7]->id), "readString");
 	library[7]->entryType = ENTRY_FUNCTION;
 	library[7]->u.eFunction.resultType = typeVoid;
 	library[7]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[7]->u.eFunction.firstArgument->id = (char *) new char* [strlen("n") + 1];
+	library[7]->u.eFunction.firstArgument->id = new char [strlen("n") + 1];
 	strcpy((library[7]->u.eFunction.firstArgument->id), "n");
 	library[7]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[7]->u.eFunction.firstArgument->u.eParameter.type = createInt();
 	library[7]->u.eFunction.firstArgument->u.eParameter.type->refCount++;
 	library[7]->u.eFunction.firstArgument->u.eParameter.mode = PASS_BY_VALUE;
 	library[7]->u.eFunction.lastArgument = (SymbolEntry *)new(SymbolEntry);
-	library[7]->u.eFunction.lastArgument->id = (char *) new char* [strlen("s") + 1];
+	library[7]->u.eFunction.lastArgument->id = new char [strlen("s") + 1];
 	strcpy((library[7]->u.eFunction.lastArgument->id), "s");
 	library[7]->u.eFunction.lastArgument->entryType = ENTRY_PARAMETER;
 	library[7]->u.eFunction.lastArgument->u.eParameter.type = createCharArr();
@@ -1456,12 +1505,12 @@ void createLibrary(){
 	library[7]->u.eFunction.firstArgument->u.eParameter.next = library[7]->u.eFunction.lastArgument;
 
 	library[8] = (SymbolEntry *)new(SymbolEntry);
-	library[8]->id = (char *) new char* [strlen("extend") + 1];
+	library[8]->id = new char [strlen("extend") + 1];
 	strcpy((library[8]->id), "extend");
 	library[8]->entryType = ENTRY_FUNCTION;
 	library[8]->u.eFunction.resultType = createInt();
 	library[8]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[8]->u.eFunction.firstArgument->id = (char *) new char* [strlen("b") + 1];
+	library[8]->u.eFunction.firstArgument->id = new char [strlen("b") + 1];
 	strcpy((library[8]->u.eFunction.firstArgument->id), "b");
 	library[8]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[8]->u.eFunction.firstArgument->u.eParameter.type = createChar();
@@ -1471,12 +1520,12 @@ void createLibrary(){
 	library[8]->u.eFunction.lastArgument = library[8]->u.eFunction.firstArgument;
 
 	library[9] = (SymbolEntry *)new(SymbolEntry);
-	library[9]->id = (char *) new char* [strlen("shrink") + 1];
+	library[9]->id = new char [strlen("shrink") + 1];
 	strcpy((library[9]->id), "shrink");
 	library[9]->entryType = ENTRY_FUNCTION;
 	library[9]->u.eFunction.resultType = createChar();
 	library[9]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[9]->u.eFunction.firstArgument->id = (char *) new char* [strlen("i") + 1];
+	library[9]->u.eFunction.firstArgument->id = new char [strlen("i") + 1];
 	strcpy((library[9]->u.eFunction.firstArgument->id), "i");
 	library[9]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[9]->u.eFunction.firstArgument->u.eParameter.type = createInt();
@@ -1486,12 +1535,12 @@ void createLibrary(){
 	library[9]->u.eFunction.lastArgument = library[9]->u.eFunction.firstArgument;
 
 	library[10] = (SymbolEntry *)new(SymbolEntry);
-	library[10]->id = (char *) new char* [strlen("strlen") + 1];
+	library[10]->id = new char [strlen("strlen") + 1];
 	strcpy((library[10]->id), "strlen");
 	library[10]->entryType = ENTRY_FUNCTION;
 	library[10]->u.eFunction.resultType = createInt();
 	library[10]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[10]->u.eFunction.firstArgument->id = (char *) new char* [strlen("s") + 1];
+	library[10]->u.eFunction.firstArgument->id = new char [strlen("s") + 1];
 	strcpy((library[10]->u.eFunction.firstArgument->id), "s");
 	library[10]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[10]->u.eFunction.firstArgument->u.eParameter.type = createCharArr();
@@ -1501,19 +1550,19 @@ void createLibrary(){
 	library[10]->u.eFunction.lastArgument = library[10]->u.eFunction.firstArgument;
 
 	library[11] = (SymbolEntry *)new(SymbolEntry);
-	library[11]->id = (char *) new char* [strlen("strcmp") + 1];
+	library[11]->id = new char [strlen("strcmp") + 1];
 	strcpy((library[11]->id), "strcmp");
 	library[11]->entryType = ENTRY_FUNCTION;
 	library[11]->u.eFunction.resultType = createInt();
 	library[11]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[11]->u.eFunction.firstArgument->id = (char *) new char* [strlen("s1") + 1];
+	library[11]->u.eFunction.firstArgument->id = new char [strlen("s1") + 1];
 	strcpy((library[11]->u.eFunction.firstArgument->id), "s1");
 	library[11]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[11]->u.eFunction.firstArgument->u.eParameter.type = createCharArr();
 	library[11]->u.eFunction.firstArgument->u.eParameter.type->refCount++;
 	library[11]->u.eFunction.firstArgument->u.eParameter.mode = PASS_BY_REFERENCE;
 	library[11]->u.eFunction.lastArgument = (SymbolEntry *)new(SymbolEntry);
-	library[11]->u.eFunction.lastArgument->id = (char *) new char* [strlen("s2") + 1];
+	library[11]->u.eFunction.lastArgument->id = new char [strlen("s2") + 1];
 	strcpy((library[11]->u.eFunction.lastArgument->id), "s2");
 	library[11]->u.eFunction.lastArgument->entryType = ENTRY_PARAMETER;
 	library[11]->u.eFunction.lastArgument->u.eParameter.type = createCharArr();
@@ -1523,19 +1572,19 @@ void createLibrary(){
 	library[11]->u.eFunction.firstArgument->u.eParameter.next = library[11]->u.eFunction.lastArgument;
 
 	library[12] = (SymbolEntry *)new(SymbolEntry);
-	library[12]->id = (char *) new char* [strlen("strcpy") + 1];
+	library[12]->id = new char [strlen("strcpy") + 1];
 	strcpy((library[12]->id), "strcpy");
 	library[12]->entryType = ENTRY_FUNCTION;
 	library[12]->u.eFunction.resultType = typeVoid;
 	library[12]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[12]->u.eFunction.firstArgument->id = (char *) new char* [strlen("trg") + 1];
+	library[12]->u.eFunction.firstArgument->id = new char [strlen("trg") + 1];
 	strcpy((library[12]->u.eFunction.firstArgument->id), "trg");
 	library[12]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[12]->u.eFunction.firstArgument->u.eParameter.type = createCharArr();
 	library[12]->u.eFunction.firstArgument->u.eParameter.type->refCount++;
 	library[12]->u.eFunction.firstArgument->u.eParameter.mode = PASS_BY_REFERENCE;
 	library[12]->u.eFunction.lastArgument = (SymbolEntry *)new(SymbolEntry);
-	library[12]->u.eFunction.lastArgument->id = (char *) new char* [strlen("src") + 1];
+	library[12]->u.eFunction.lastArgument->id = new char [strlen("src") + 1];
 	strcpy((library[12]->u.eFunction.lastArgument->id), "src");
 	library[12]->u.eFunction.lastArgument->entryType = ENTRY_PARAMETER;
 	library[12]->u.eFunction.lastArgument->u.eParameter.type = createCharArr();
@@ -1545,19 +1594,19 @@ void createLibrary(){
 	library[12]->u.eFunction.firstArgument->u.eParameter.next = library[12]->u.eFunction.lastArgument;
 
 	library[13] = (SymbolEntry *)new(SymbolEntry);
-	library[13]->id = (char *) new char* [strlen("strcat") + 1];
+	library[13]->id = new char [strlen("strcat") + 1];
 	strcpy((library[13]->id), "strcat");
 	library[13]->entryType = ENTRY_FUNCTION;
 	library[13]->u.eFunction.resultType = typeVoid;
 	library[13]->u.eFunction.firstArgument = (SymbolEntry *)new(SymbolEntry);
-	library[13]->u.eFunction.firstArgument->id = (char *) new char* [strlen("trg") + 1];
+	library[13]->u.eFunction.firstArgument->id = new char [strlen("trg") + 1];
 	strcpy((library[13]->u.eFunction.firstArgument->id), "trg");
 	library[13]->u.eFunction.firstArgument->entryType = ENTRY_PARAMETER;
 	library[13]->u.eFunction.firstArgument->u.eParameter.type = createCharArr();
 	library[13]->u.eFunction.firstArgument->u.eParameter.type->refCount++;
 	library[13]->u.eFunction.firstArgument->u.eParameter.mode = PASS_BY_REFERENCE;
 	library[13]->u.eFunction.lastArgument = (SymbolEntry *)new(SymbolEntry);
-	library[13]->u.eFunction.lastArgument->id = (char *) new char* [strlen("src") + 1];
+	library[13]->u.eFunction.lastArgument->id = new char [strlen("src") + 1];
 	strcpy((library[13]->u.eFunction.lastArgument->id), "src");
 	library[13]->u.eFunction.lastArgument->entryType = ENTRY_PARAMETER;
 	library[13]->u.eFunction.lastArgument->u.eParameter.type = createCharArr();

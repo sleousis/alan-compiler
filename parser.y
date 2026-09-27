@@ -19,6 +19,9 @@ void yyerror (const char msg[]);
 
 extern int lineno;
 extern SymbolEntry* library[14];
+/* The parser stack grows on the heap up to this many entries. The default
+   of 10000 ran out on long statement lists and deeply nested statements. */
+#define YYMAXDEPTH 1000000
 ast tree;
 bool opt;
 %}

@@ -164,7 +164,7 @@ void destroySymbolTable ()
 		if (hashTable[i] != NULL)
 			destroyEntry(hashTable[i]);
 
-	delete(hashTable);
+	delete[] hashTable;
 }
 
 void openScope ()
@@ -223,7 +223,7 @@ static SymbolEntry * newEntry (char * name)
 	/* Αρχικοποίηση όλων εκτός: entryType και u */
 
 	e = (SymbolEntry *) new(SymbolEntry);
-	e->id = (char *) new char* [strlen(name) + 1];
+	e->id = new char[strlen(name) + 1];
 
 	strcpy((char *) (e->id), name);
 	e->hashValue    = PJW_hash(name) % hashTableSize;
@@ -283,7 +283,7 @@ SymbolEntry * newConstant (char * name, Type_T type, ...)
 		if (equalType(type->refType, typeChar)) {
 			RepString str = va_arg(ap, RepString);
 
-			value.vString = (char *) new const char* [strlen(str) + 1];
+			value.vString = new char[strlen(str) + 1];
 			strcpy((char *) (value.vString), str);
 			break;
 		}
@@ -514,7 +514,7 @@ void destroyEntry (SymbolEntry * e)
 		break;
 	case ENTRY_CONSTANT:
 		if (e->u.eConstant.type->kind == Type_tag::TYPE_ARRAY)
-			delete((char *) (e->u.eConstant.value.vString));
+			delete[] e->u.eConstant.value.vString;
 		destroyType(e->u.eConstant.type);
 		break;
 	case ENTRY_FUNCTION:
@@ -523,7 +523,7 @@ void destroyEntry (SymbolEntry * e)
 			SymbolEntry * p = args;
 
 			destroyType(args->u.eParameter.type);
-			delete((char *) (args->id));
+			delete[] args->id;
 			args = args->u.eParameter.next;
 			delete(p);
 		}
@@ -536,7 +536,7 @@ void destroyEntry (SymbolEntry * e)
 		destroyType(e->u.eTemporary.type);
 		break;
 	}
-	delete((char *) (e->id));
+	delete[] e->id;
 	delete(e);
 }
 

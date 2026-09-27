@@ -71,5 +71,8 @@ if(UNIX AND TARGET zstd::libzstd_shared AND zstd_STATIC_LIBRARY)
 endif()
 if(MSVC)
   set_property(TARGET alanc PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+  # Windows gives the main thread 1 MB of stack, and LLVM's code generator
+  # recurses deeply on long expressions. Linux and macOS give 8 MB.
+  target_link_options(alanc PRIVATE /STACK:16777216)
   target_compile_definitions(alanc PRIVATE YY_NO_UNISTD_H _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
 endif()
