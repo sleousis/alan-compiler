@@ -29,12 +29,14 @@ Windows environment variable settings.
 
 Commands
 
-  alanc run <file.alan> [-O]                compile, link and run the program
-  alanc build <file.alan> [-o name] [-O]    compile and link an executable
-  alanc check <file.alan>                   check the program for errors only
-  alanc <file.alan> [-O]                    print the LLVM IR
+  alanc run <file.alan> [-O] [-g]                compile, link and run the program
+  alanc build <file.alan> [-o name] [-O] [-g]    compile and link an executable
+  alanc check <file.alan>                        check the program for errors only
+  alanc <file.alan> [-O]                         print the LLVM IR
+  alanc --version                                print the version
 
--O turns on optimization.
+-O turns on optimization. -g adds debug information for a debugger such
+as LLDB and turns optimization off.
 
 Notes
 

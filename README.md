@@ -15,14 +15,14 @@ A compiler for Alan, a small Pascal/C-like teaching language. It was written as 
 
 ## Install
 
-One command installs the latest release. It needs nothing else, because the bundle carries the Zig toolchain that links programs.
+One command installs the newest compiler release. It needs nothing else, because the bundle carries the Zig toolchain that links programs.
 
 ```
 Windows (PowerShell):  irm https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.ps1 | iex
 Linux and macOS:       curl -fsSL https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.sh | sh
 ```
 
-On Windows the compiler goes to `%LOCALAPPDATA%\alan` and its `bin` folder is added to your user PATH. On Linux and macOS it goes to `~/.local/share/alan` and `alanc` is linked into `~/.local/bin`. The installers check the download against the release's `SHA256SUMS` and print how to uninstall. To install a given release instead of the latest, set `ALAN_VERSION`:
+On Windows the compiler goes to `%LOCALAPPDATA%\alan` and its `bin` folder is added to your user PATH. On Linux and macOS it goes to `~/.local/share/alan` and `alanc` is linked into `~/.local/bin`, unless a file that is not a link already has that name. The installers check the download against the release's `SHA256SUMS` and print how to uninstall. To install a given release instead of the latest, set `ALAN_VERSION`:
 
 ```
 Windows (PowerShell):  $env:ALAN_VERSION = "v2.0.0"; irm https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.ps1 | iex
@@ -87,20 +87,23 @@ The project was first written for an older LLVM with typed pointers (it built wi
 | `symbol.cpp`, `symbol.hpp` | symbol table |
 | `error.cpp`, `general.cpp` | error reporting and helpers |
 | `CMakeLists.txt` | builds `alanc` on every platform |
+| `glibc_compat.c` | symbols that the LLVM libraries use and glibc before 2.33 lacks |
+| `bundle-README.txt` | the `README.txt` inside each release bundle |
 | `runtime/` | the Alan runtime library in C, built into `libalanrt.a` with Zig |
 | `tools/` | build scripts per platform and the bundle packager |
 | `install/` | the one-line installers |
 | `tests/` | example and error tests (see its `README.md`) |
 | `vscode/` | the Visual Studio Code extension |
+| `docs/` | design notes and plans |
 | `Examples/` | sample programs (`test` and `test2` are Alan sources without the `.alan` extension) |
 | `alan2018.pdf` | Alan language specification |
 | `Makefile`, `alan`, `do.sh`, `alan_lib_v2/` | the older Linux-only pipeline (see below) |
 
 ## Build from source
 
-Each script builds `alanc` and `libalanrt.a` for the machine it runs on into `dist/<platform>/`, as `bin/alanc` and `lib/libalanrt.a`. All of them need CMake, Python 3 and Zig 0.16.0 (set `ALAN_ZIG` to the `zig` executable, or put it on the PATH).
+Each script builds `alanc` and `libalanrt.a` for the machine it runs on into `dist/<platform>/`, as `bin/alanc` and `lib/libalanrt.a`. All of them need CMake and Zig 0.16.0 (set `ALAN_ZIG` to the `zig` executable, or put it on the PATH). Python 3 is needed only for `tools/package.py` and the tests.
 
-- **Linux (x64 or ARM64):** `sh tools/build-linux.sh`. It needs GCC 11 or newer, flex and Bison 3.8. LLVM comes from `LLVM_DIR`, from `/usr/lib/llvm-23` (the `llvm-23-dev` package from [apt.llvm.org](https://apt.llvm.org)), or else from the official LLVM release package, which the script downloads. Release builds run inside Ubuntu 20.04, so `alanc` needs only glibc 2.31 or newer.
+- **Linux (x64 or ARM64):** `sh tools/build-linux.sh`. It needs a C++17 compiler, flex and Bison 3.8. LLVM comes from `LLVM_DIR`, from `/usr/lib/llvm-23` (the `llvm-23-dev` package from [apt.llvm.org](https://apt.llvm.org)), or else from the official LLVM release package, which the script downloads. That package needs GCC 11 or newer, so set `CC` and `CXX` to it. Release builds run inside Ubuntu 20.04, so `alanc` needs only glibc 2.31 or newer.
 - **Windows (x64 or ARM64):** `powershell -File tools\build-windows.ps1` on a machine with Visual Studio and its C++ tools. The script downloads the official LLVM release package and win_flex_bison, and builds zlib and zstd.
 - **macOS (Intel or Apple silicon):** `sh tools/build-macos.sh`. It first builds LLVM 23 from source for macOS 12, which takes about an hour once. Bison, flex and ninja come from Homebrew as build tools only, and `alanc` links only system libraries.
 
@@ -120,6 +123,7 @@ alanc run FILE.alan [-O] [-g]                 compile, link and run the program
 alanc build FILE.alan [-o NAME] [-O] [-g]     compile and link an executable
 alanc check FILE.alan                         check the program for errors only
 alanc FILE.alan [-O]                          print the LLVM IR
+alanc --version                               print the version
 ```
 
 | Option | Meaning |

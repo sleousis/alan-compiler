@@ -1,7 +1,7 @@
 # Alan editor support, native Windows and one-click install
 
 Date: 2026-09-26
-Status: approved in conversation, waiting for spec review
+Status: implemented on the editor-support branch
 
 ## Goal
 
