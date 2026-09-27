@@ -61,3 +61,17 @@
   x = 1;
 --^ - string.quoted.double.alan
 --    ^ constant.numeric.integer.alan
+  x = '' + 'a';
+--    ^^ invalid.illegal.character.alan
+--         ^^^ constant.character.alan
+--       ^ keyword.operator.alan
+  s = "a backslash that ends the line \
+--    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ string.quoted.double.alan
+--                                    ^ - invalid.illegal.escape.alan
+  x = 2;
+--^ - string.quoted.double.alan
+  s = "abc\"
+--    ^^^^^^ string.quoted.double.alan
+--        ^^ constant.character.escape.alan
+  x = 3;
+--^ - string.quoted.double.alan

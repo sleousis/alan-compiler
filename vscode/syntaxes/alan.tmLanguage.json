@@ -43,9 +43,9 @@
           "match": "\\\\(n|t|r|0|\\\\|'|\"|x[0-9a-fA-F]{2})"
         },
         {
-          "comment": "Any other backslash is an error in the compiler's lexer.",
+          "comment": "Any other backslash is an error in the compiler's lexer. A backslash that ends the line only leaves the string open.",
           "name": "invalid.illegal.escape.alan",
-          "match": "\\\\.?"
+          "match": "\\\\."
         }
       ]
     },
@@ -58,7 +58,7 @@
         },
         {
           "name": "invalid.illegal.character.alan",
-          "match": "'(\\\\.|[^'\\\\])+?'"
+          "match": "'(\\\\.|[^'\\\\])*?'"
         }
       ]
     },
