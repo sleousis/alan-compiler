@@ -4,6 +4,7 @@ import {
   WSL_LAUNCH,
 } from "../../src/client/compiler";
 import { toWslPath } from "../../src/client/wsl";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -347,6 +348,8 @@ describe("the WSL wrapper on Windows", function () {
 
   before(function () {
     if (process.platform !== "win32" || !existsSync(wslExe)) this.skip();
+    // CI runners have wsl.exe but no Linux distribution to run.
+    if (spawnSync(wslExe, ["-e", "true"], { timeout: 30000 }).status !== 0) this.skip();
   });
 
   it("hands hostile arguments to the Linux program byte for byte", async () => {
