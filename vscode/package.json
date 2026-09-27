@@ -1,0 +1,139 @@
+{
+  "name": "alan",
+  "displayName": "Alan",
+  "description": "Alan language support: highlighting, live errors, completion and one-click run.",
+  "version": "1.0.0",
+  "publisher": "sleousis",
+  "private": true,
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sleousis/alan-compiler"
+  },
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Snippets"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languages": [
+      {
+        "id": "alan",
+        "aliases": [
+          "Alan"
+        ],
+        "extensions": [
+          ".alan"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "alan",
+        "scopeName": "source.alan",
+        "path": "./syntaxes/alan.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "alan",
+        "path": "./snippets/alan.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "alan.run",
+        "title": "Alan: Run",
+        "icon": "$(play)"
+      },
+      {
+        "command": "alan.build",
+        "title": "Alan: Build"
+      },
+      {
+        "command": "alan.showIr",
+        "title": "Alan: Show IR"
+      },
+      {
+        "command": "alan.install",
+        "title": "Alan: Install or Update Compiler"
+      },
+      {
+        "command": "alan.uninstall",
+        "title": "Alan: Remove Installed Compiler"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "alan.run",
+          "when": "editorLangId == alan"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Alan",
+      "properties": {
+        "alan.compilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to alanc. Empty means the installed copy or alanc on PATH."
+        },
+        "alan.optimize": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pass -O to the compiler."
+        },
+        "alan.useWsl": {
+          "type": "boolean",
+          "default": false,
+          "description": "On Windows, install and run the compiler inside WSL."
+        },
+        "alan.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run alanc check when a file is saved."
+        }
+      }
+    },
+    "taskDefinitions": [
+      {
+        "type": "alan",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string"
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "mocha",
+    "test:grammar": "vscode-tmgrammar-test \"test/grammar/*.alan\"",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.4",
+    "@types/vscode": "1.104.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "mocha": "^12.0.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vscode-tmgrammar-test": "^0.1.3"
+  }
+}

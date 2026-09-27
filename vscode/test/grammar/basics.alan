@@ -1,0 +1,15 @@
+-- SYNTAX TEST "source.alan" "basics"
+main () : proc
+-- <---- entity.name.function.alan
+  x : int;
+--    ^^^ storage.type.alan
+{
+  (* outer (* nested *) still comment *)
+--                      ^^^^^ comment.block.alan
+  writeString("a\n");
+--^^^^^^^^^^^ support.function.alan
+--              ^^ constant.character.escape.alan
+  if (x == 'b') return;
+--^^ keyword.control.alan
+--         ^^^ constant.character.alan
+}

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Alan",
+  "scopeName": "source.alan",
+  "fileTypes": ["alan"],
+  "patterns": [
+    { "include": "#blockComment" },
+    { "include": "#lineComment" },
+    { "include": "#string" },
+    { "include": "#character" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#storage" },
+    { "include": "#boolean" },
+    { "include": "#functionDeclaration" },
+    { "include": "#libraryFunction" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "blockComment": {
+      "comment": "Any text may appear inside, and (* *) pairs nest, as in the compiler's lexer.",
+      "name": "comment.block.alan",
+      "begin": "\\(\\*",
+      "end": "\\*\\)",
+      "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.alan" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.comment.end.alan" } },
+      "patterns": [{ "include": "#blockComment" }]
+    },
+    "lineComment": {
+      "name": "comment.line.double-dash.alan",
+      "match": "--.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.alan",
+      "comment": "Strings cannot span lines, so an unterminated one stops at the end of its line.",
+      "begin": "\"",
+      "end": "\"|$",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.alan" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.alan" } },
+      "patterns": [
+        {
+          "name": "constant.character.escape.alan",
+          "match": "\\\\(n|t|r|0|\\\\|'|\"|x[0-9a-fA-F]{2})"
+        }
+      ]
+    },
+    "character": {
+      "name": "constant.character.alan",
+      "match": "'(\\\\(n|t|r|0|\\\\|'|\"|x[0-9a-fA-F]{2})|[^'\\\\])'"
+    },
+    "number": {
+      "name": "constant.numeric.integer.alan",
+      "match": "\\b[0-9]+\\b"
+    },
+    "keyword": {
+      "name": "keyword.control.alan",
+      "match": "\\b(if|else|while|return)\\b"
+    },
+    "storage": {
+      "patterns": [
+        { "name": "storage.type.alan", "match": "\\b(int|byte|proc)\\b" },
+        { "name": "storage.modifier.alan", "match": "\\breference\\b" }
+      ]
+    },
+    "boolean": {
+      "name": "constant.language.boolean.alan",
+      "match": "\\b(true|false)\\b"
+    },
+    "functionDeclaration": {
+      "comment": "A name at the start of a line followed by a parameter list and a colon: name (params) : type. Headers split across lines are not highlighted.",
+      "match": "^\\s*([A-Za-z][A-Za-z0-9_]*)(?=\\s*\\([^()]*\\)\\s*:)",
+      "captures": { "1": { "name": "entity.name.function.alan" } }
+    },
+    "libraryFunction": {
+      "name": "support.function.alan",
+      "match": "\\b(writeInteger|writeByte|writeChar|writeString|readInteger|readByte|readChar|readString|extend|shrink|strlen|strcmp|strcpy|strcat)\\b(?=\\s*\\()"
+    },
+    "operator": {
+      "name": "keyword.operator.alan",
+      "match": "==|!=|<=|>=|[+\\-*/%<>=!&|]"
+    }
+  }
+}
