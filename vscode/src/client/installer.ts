@@ -45,6 +45,8 @@ const OFFLINE = "Could not reach GitHub. Check your connection and try again.";
 const MISMATCH = "The download did not match its checksum. Nothing was installed.";
 const CANCELLED = "Installation cancelled. Nothing was installed.";
 const IN_USE = "The installed Alan compiler is in use. Stop the programs that use it and try again.";
+const TOO_LARGE = "The download is too large or unsafe. Nothing was installed.";
+const TOO_OLD = `No compatible Alan release yet. The extension needs ${MIN_COMPILER} or later.`;
 
 /** No data from the server for this long counts as offline. */
 const IDLE_MS = 30_000;
@@ -54,6 +56,17 @@ const TEXT_LIMIT = 4 * 1024 * 1024;
 const ZIP_PARALLEL = 16;
 /** Tar entries being written before reading the archive pauses. */
 const TAR_PARALLEL = 64;
+/** Largest download. A bundle is about 100 MB. */
+const MAX_DOWNLOAD = 1024 * 1024 * 1024;
+
+/** How much an archive may unpack to. */
+export interface UnpackLimits {
+  bytes: number;
+  entries: number;
+}
+
+/** A bundle unpacks to about 21,000 entries and 400 MB, most of it the zig folder. */
+const LIMITS: UnpackLimits = { bytes: 4 * 1024 * 1024 * 1024, entries: 200_000 };
 
 /** An error whose message a person can act on. */
 class InstallError extends Error {}
@@ -121,6 +134,12 @@ function cancelled(signal?: AbortSignal): boolean {
 
 // ---- downloads ----
 
+/** True when a download may follow a redirect from one address to another: never from https to http. */
+export function redirectAllowed(from: URL, to: URL): boolean {
+  if (to.protocol !== "https:" && to.protocol !== "http:") return false;
+  return !(from.protocol === "https:" && to.protocol !== "https:");
+}
+
 /** The answer to a GET of url with status 200, after redirects. 404 means there is no such release. */
 function get(url: string, signal?: AbortSignal, redirects = 5): Promise<http.IncomingMessage> {
   return new Promise((resolve, reject) => {
@@ -132,7 +151,7 @@ function get(url: string, signal?: AbortSignal, redirects = 5): Promise<http.Inc
       if (status >= 300 && status < 400 && res.headers.location) {
         res.resume();
         const next = new URL(res.headers.location, u);
-        if (redirects === 0 || (u.protocol === "https:" && next.protocol !== "https:")) {
+        if (redirects === 0 || !redirectAllowed(u, next)) {
           return reject(new InstallError(`GitHub sent an unexpected redirect for ${u.pathname}. Try again later.`));
         }
         return resolve(get(next.href, signal, redirects - 1));
@@ -199,12 +218,17 @@ async function download(
 ): Promise<string> {
   const res = await get(url, signal);
   const total = Number(res.headers["content-length"]) || 0;
+  if (total > MAX_DOWNLOAD) {
+    res.destroy();
+    throw new InstallError(TOO_LARGE);
+  }
   const hash = createHash("sha256");
   let got = 0;
   const meter = new Transform({
     transform(chunk: Buffer, _enc, done) {
-      hash.update(chunk);
       got += chunk.length;
+      if (got > MAX_DOWNLOAD) return done(new InstallError(TOO_LARGE));
+      hash.update(chunk);
       onBytes(got, total);
       done(null, chunk);
     },
@@ -268,6 +292,7 @@ function badArchive(e: unknown): InstallError {
   // yauzl's own name checks.
   const m = /^(?:absolute path|invalid relative path|invalid characters in fileName): (.*)$/.exec(msg);
   if (m) return unsafePath(m[1]);
+  if (/decompression ratio/.test(msg)) return new InstallError(TOO_LARGE);
   return new InstallError(`The download could not be unpacked (${msg}). Nothing was installed.`);
 }
 
@@ -277,12 +302,19 @@ function badArchive(e: unknown): InstallError {
  * into dest after the caller removes it.
  */
 function unzip(
-  file: string, dest: string, onProgress?: (done: number, total: number) => void, signal?: AbortSignal,
+  file: string, dest: string, limits: UnpackLimits, onProgress?: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     yauzl.open(file, { lazyEntries: true, autoClose: false, decodeStrings: true, validateEntrySizes: true }, (err, zip) => {
       if (err || !zip) return reject(badArchive(err));
       const total = zip.entryCount;
+      if (total > limits.entries) {
+        zip.close();
+        return reject(new InstallError(TOO_LARGE));
+      }
+      // yauzl checks each entry against its declared size (validateEntrySizes).
+      let bytes = 0;
       const folder = folderMaker();
       let done = 0;
       let running = 0;
@@ -311,6 +343,8 @@ function unzip(
       const unpack = async (entry: yauzl.Entry) => {
         const target = entryTarget(dest, entry.fileName);
         const type = (entry.externalFileAttributes >>> 16) & 0o170000;
+        bytes += entry.uncompressedSize;
+        if (bytes > limits.bytes) throw new InstallError(TOO_LARGE);
         if (type === 0o120000) throw badLink(entry.fileName);
         if (type !== 0 && type !== 0o100000 && type !== 0o040000) throw unsafePath(entry.fileName);
         if (!target) return;
@@ -365,6 +399,19 @@ function throughLink(dest: string, p: string, links: Set<string>): boolean {
 }
 
 /**
+ * True for link text of the form ../../a/b: some .. parts, then only names.
+ * The kernel follows links inside the text as it goes, so a .. after a name
+ * could climb out of a link that points up. Links of this form that stay
+ * inside dest on paper also do on disk, in any order of entries.
+ */
+function upsThenNames(link: string): boolean {
+  const parts = link.split("/");
+  let i = 0;
+  while (i < parts.length && parts[i] === "..") i++;
+  return parts.slice(i).every((p) => p !== "" && p !== "." && p !== "..");
+}
+
+/**
  * Where a tar entry goes, and for a hard link the file it links to. Throws
  * when the entry may not be unpacked into dest. links holds the symbolic
  * links unpacked so far: nothing is unpacked through one, since a link that
@@ -382,7 +429,7 @@ function tarTarget(dest: string, entry: tar.ReadEntry, links: Set<string>): { ta
     case "SymbolicLink": {
       const link = entry.linkpath ?? "";
       if (!target || !link || link.includes("\\") || path.isAbsolute(link) || /^[A-Za-z]:/.test(link)
-        || !inside(dest, path.resolve(path.dirname(target), link))) {
+        || !upsThenNames(link) || !inside(dest, path.resolve(path.dirname(target), link))) {
         throw badLink(entry.path);
       }
       return { target };
@@ -409,7 +456,8 @@ function tarTarget(dest: string, entry: tar.ReadEntry, links: Set<string>): { ta
  * it settles once the writes already started are done.
  */
 async function untar(
-  file: string, dest: string, onProgress?: (done: number, total: number) => void, signal?: AbortSignal,
+  file: string, dest: string, limits: UnpackLimits, onProgress?: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const total = (await fsp.stat(file)).size;
   const folder = folderMaker();
@@ -421,6 +469,10 @@ async function untar(
     let pending = 0;
     let ended = false;
     let settled = false;
+    let entries = 0;
+    let bytes = 0;
+    /** Entries whose data is still being written. */
+    const writing = new Set<tar.ReadEntry>();
     const settle = () => {
       if (settled || !ended || pending > 0) return;
       settled = true;
@@ -449,6 +501,12 @@ async function untar(
     const unpack = (entry: tar.ReadEntry) => {
       if (error === undefined && cancelled(signal)) error = new InstallError(CANCELLED);
       if (error !== undefined) return entry.resume();
+      entries++;
+      bytes += entry.size ?? 0;
+      if (entries > limits.entries || bytes > limits.bytes) {
+        error = new InstallError(TOO_LARGE);
+        return entry.resume();
+      }
       let where: { target?: string; linked?: string };
       try {
         where = tarTarget(dest, entry, links);
@@ -476,13 +534,35 @@ async function untar(
         })());
       }
       // Minipass keeps the entry's data until the pipe below reads it.
+      writing.add(entry);
       written.set(target, track((async () => {
-        await folder(path.dirname(target));
-        // wx: an entry never replaces a file that is already there.
-        await pipeline(entry, fs.createWriteStream(target, { flags: "wx", mode: ((entry.mode ?? 0o644) & 0o777) | 0o600 }));
+        try {
+          await folder(path.dirname(target));
+          if (halted) throw new Error("archive stopped");
+          // wx: an entry never replaces a file that is already there.
+          await pipeline(entry, fs.createWriteStream(target, { flags: "wx", mode: ((entry.mode ?? 0o644) & 0o777) | 0o600 }));
+        } finally {
+          writing.delete(entry);
+        }
       })()));
     };
+    // Stops everything when the archive cannot go on: the parser gave up
+    // (bad compressed data, a too high compression ratio) or the file could
+    // not be read. The parser then never ends, and the entry it was filling
+    // never gets the rest of its data, so both are ended here.
+    let halted = false;
+    const stop = (e: unknown) => {
+      error ??= badArchive(e);
+      ended = true;
+      halted = true;
+      input.destroy();
+      // An entry not yet piped sees halted instead. The handler keeps the
+      // error of one that is piped from going unhandled.
+      for (const entry of writing) entry.on("error", () => {}).destroy(new Error("archive stopped"));
+      settle();
+    };
     const parser = new tar.Parser({ strict: true, onReadEntry: unpack });
+    parser.on("abort", stop);
     parser.on("error", (e: unknown) => {
       error ??= badArchive(e);
     });
@@ -502,10 +582,7 @@ async function untar(
       flow();
     });
     input.on("end", () => parser.end());
-    input.on("error", (e) => {
-      error ??= badArchive(e);
-      parser.end();
-    });
+    input.on("error", stop);
   });
 }
 
@@ -513,16 +590,16 @@ async function untar(
  * Unpacks a release bundle into dest, an empty folder, without its top
  * alan/ folder. Entries outside alan/, absolute paths, .. parts, device
  * files and links that lead out of dest fail the whole archive, and zip
- * archives may hold no links at all. onProgress hears entries done (zip) or
- * bytes read (tar.gz).
+ * archives may hold no links at all. So does unpacking more than limits
+ * allows. onProgress hears entries done (zip) or bytes read (tar.gz).
  */
 export async function extractArchive(
   file: string, dest: string, kind: "zip" | "tar.gz",
-  onProgress?: (done: number, total: number) => void, signal?: AbortSignal,
+  onProgress?: (done: number, total: number) => void, signal?: AbortSignal, limits: UnpackLimits = LIMITS,
 ): Promise<void> {
   const root = path.resolve(dest);
-  if (kind === "zip") await unzip(file, root, onProgress, signal);
-  else await untar(file, root, onProgress, signal);
+  if (kind === "zip") await unzip(file, root, limits, onProgress, signal);
+  else await untar(file, root, limits, onProgress, signal);
 }
 
 // ---- install and removal ----
@@ -547,6 +624,16 @@ async function rename(from: string, to: string): Promise<void> {
 
 function remove(p: string): Promise<void> {
   return fsp.rm(p, { recursive: true, force: true, maxRetries: 5 });
+}
+
+/**
+ * Puts storageDir/alan.old back as alan when alan is missing, which happens
+ * when a swap failed and so did its rollback. Nothing may delete that copy.
+ */
+async function recover(storageDir: string): Promise<void> {
+  const dest = path.join(storageDir, "alan");
+  const old = `${dest}.old`;
+  if (!fs.existsSync(dest) && fs.existsSync(old)) await rename(old, dest);
 }
 
 /** Moves fresh to dest. An old dest comes back if that fails, and goes otherwise. */
@@ -607,9 +694,10 @@ export async function install(
   const dest = path.join(storageDir, "alan");
   await fsp.mkdir(storageDir, { recursive: true });
   try {
+    await recover(storageDir);
     report("Looking for the latest release", 0);
     const tag = await latestTag(src, signal);
-    if (isOlderTag(tag, MIN_COMPILER)) throw new InstallError(NO_RELEASE);
+    if (isOlderTag(tag, MIN_COMPILER)) throw new InstallError(TOO_OLD);
     const asset = assetName(tag, platform, arch);
     const want = checksumFor(await fetchText(src.download(tag, "SHA256SUMS"), signal), asset);
     if (!want) throw new InstallError(NO_RELEASE);
@@ -656,6 +744,7 @@ export async function uninstall(storageDir: string): Promise<void> {
   const dest = path.join(storageDir, "alan");
   const old = `${dest}.old`;
   try {
+    await recover(storageDir);
     await remove(old);
     // A rename first, so a compiler in use keeps all its files instead of half of them.
     if (fs.existsSync(dest)) await rename(dest, old);

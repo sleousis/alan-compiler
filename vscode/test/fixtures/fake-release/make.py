@@ -96,6 +96,14 @@ def main():
         (ti("alan/a/b/s/u", tarfile.SYMTYPE, 0o777, "../../escaped"), None),
         (ti("alan/a/b/s/u/escaped.txt"), ok),
     ]))
+    # l1 points two folders up from a/b/c, to a. Read on paper from a,
+    # b/c/l1/../../.. is dest/a and inside, but the kernel follows l1
+    # first and lands two folders above dest.
+    (evil / "updown.tar.gz").write_bytes(tar_bytes([
+        (ti("alan/bin/alanc", mode=0o755), ok), (ti("alan/a/b/c", tarfile.DIRTYPE, 0o755), None),
+        (ti("alan/a/b/c/l1", tarfile.SYMTYPE, 0o777, "../.."), None),
+        (ti("alan/a/l2", tarfile.SYMTYPE, 0o777, "b/c/l1/../../.."), None),
+    ]))
     (evil / "hardlink.tar.gz").write_bytes(tar_bytes([
         (ti("alan/bin/alanc", mode=0o755), ok), (ti("alan/passwd", tarfile.LNKTYPE, 0o644, "../../etc/passwd"), None),
     ]))

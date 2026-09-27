@@ -354,12 +354,12 @@ async function installCompiler(host: Host): Promise<void> {
         { location: vscode.ProgressLocation.Notification, title: "Installing the Alan compiler", cancellable: true },
         (progress, token) => {
           const abort = new AbortController();
-          token.onCancellationRequested(() => abort.abort());
+          const cancel = token.onCancellationRequested(() => abort.abort());
           let last = 0;
           return install(storage, GITHUB, process.platform, process.arch, (message, pct) => {
             progress.report({ message, increment: pct - last });
             last = pct;
-          }, abort.signal);
+          }, abort.signal).finally(() => cancel.dispose());
         });
       forgetCompiler();
       host.output.appendLine(`Installed Alan ${r.tag} at ${r.alanc}`);

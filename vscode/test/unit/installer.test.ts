@@ -5,9 +5,10 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { gzipSync } from "node:zlib";
 import {
   assetName, extractArchive, GITHUB, install, installedCompilerPath, installedTag, isOlderTag, MIN_COMPILER, platformId,
-  ReleaseSource, uninstall, wslInstallCommand, wslUninstallCommand,
+  redirectAllowed, ReleaseSource, uninstall, wslInstallCommand, wslUninstallCommand,
 } from "../../src/client/installer";
 
 const FIXTURES = path.join(__dirname, "..", "fixtures", "fake-release");
@@ -49,6 +50,32 @@ function source(base: string, dir = ""): ReleaseSource {
 }
 
 const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+
+/** A ustar header for a regular file. */
+function tarHeader(name: string, size: number): Buffer {
+  const h = Buffer.alloc(512);
+  const put = (text: string, at: number) => h.write(text, at, "ascii");
+  put(name, 0);
+  put("0000644\0", 100);
+  put("0000000\0", 108);
+  put("0000000\0", 116);
+  put(size.toString(8).padStart(11, "0") + "\0", 124);
+  put("00000000000\0", 136);
+  put("        ", 148);
+  put("0", 156);
+  put("ustar\0", 257);
+  put("00", 263);
+  let sum = 0;
+  for (const b of h) sum += b;
+  put(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+  return h;
+}
+
+/** A tar.gz with one file of size zero bytes under alan/. */
+function zerosTarGz(size: number): Buffer {
+  const pad = (512 - (size % 512)) % 512;
+  return gzipSync(Buffer.concat([tarHeader("alan/zeros", size), Buffer.alloc(size + pad), Buffer.alloc(1024)]));
+}
 const here = { platform: process.platform, arch: process.arch };
 const ext = process.platform === "win32" ? "zip" : "tar.gz";
 
@@ -184,12 +211,12 @@ describe("installer", () => {
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
 
-  it("says there is no release for this platform when the latest is older than MIN_COMPILER", async () => {
+  it("says there is no compatible release yet when the latest is older than MIN_COMPILER", async () => {
     // Like GitHub today: v1.0.0 has no bundles.
     await srv.close();
     srv = await serve(new Map([["/old/latest.json", Buffer.from('{"tag_name":"v1.0.0"}')]]));
     await assert.rejects(install(tmp, source(srv.base, "/old"), here.platform, here.arch),
-      { message: "No Alan release for this platform." });
+      { message: "No compatible Alan release yet. The extension needs v2.0.0 or later." });
     assert.deepEqual(srv.hits, ["/old/latest.json"]);
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
@@ -252,6 +279,40 @@ describe("installer", () => {
     assert.ok(!fs.existsSync(path.join(tmp, "..", "escaped.txt")));
   });
 
+  it("refuses a download larger than the limit before reading it", async () => {
+    const asset = assetName("v2.0.0", here.platform, here.arch);
+    const server = http.createServer((req, res) => {
+      if (req.url === "/latest.json") {
+        res.end('{"tag_name":"v2.0.0"}');
+      } else if (req.url === "/v2.0.0/SHA256SUMS") {
+        res.end(`${"4".repeat(64)}  ${asset}\n`);
+      } else {
+        res.writeHead(200, { "Content-Length": 5 * 1024 * 1024 * 1024 });
+        res.write(Buffer.alloc(1000));
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await assert.rejects(install(tmp, source(base), here.platform, here.arch),
+        { message: "The download is too large or unsafe. Nothing was installed." });
+      assert.deepEqual(fs.readdirSync(tmp), []);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it("puts back a copy that a failed swap left as alan.old", async () => {
+    await install(tmp, fake, here.platform, here.arch);
+    fs.renameSync(path.join(tmp, "alan"), path.join(tmp, "alan.old"));
+    // An install that fails still keeps the copy.
+    await srv.close();
+    await assert.rejects(install(tmp, fake, here.platform, here.arch), /Could not reach/);
+    assert.deepEqual(fs.readdirSync(tmp), ["alan"]);
+    assert.equal(installedTag(tmp), "v2.0.0");
+  });
+
   it("uninstall is fine when nothing is installed", async () => {
     await uninstall(tmp);
     await uninstall(path.join(tmp, "missing"));
@@ -312,6 +373,41 @@ describe("extractArchive", () => {
     assert.equal(fs.readFileSync(path.join(dest, "bin", "zig"), "utf8"), "fine\n");
   });
 
+  it("rejects a tar.gz whose link climbs out through a link that points up", async () => {
+    await assert.rejects(extractArchive(path.join(FIXTURES, "evil", "updown.tar.gz"), dest, "tar.gz"),
+      /link that is not allowed \(alan\/a\/l2\)/);
+    assert.ok(!fs.existsSync(path.join(dest, "a", "l2")));
+  });
+
+  it("fails and does not hang on broken compressed data", async () => {
+    const good = gzipSync(Buffer.concat([tarHeader("alan/bin/alanc", 70000), Buffer.alloc(70000 + 144, 65),
+      Buffer.alloc(1024)]));
+    const bad = Buffer.from(good);
+    for (let i = 20; i < 40; i++) bad[i] ^= 0x5a;
+    const file = path.join(tmp, "bad.tar.gz");
+    fs.writeFileSync(file, bad);
+    await assert.rejects(extractArchive(file, dest, "tar.gz"), /could not be unpacked/);
+  });
+
+  it("fails and does not hang on data that expands too much", async () => {
+    const file = path.join(tmp, "bomb.tar.gz");
+    fs.writeFileSync(file, zerosTarGz(50 * 1024 * 1024));
+    await assert.rejects(extractArchive(file, dest, "tar.gz"),
+      { message: "The download is too large or unsafe. Nothing was installed." });
+  });
+
+  for (const kind of ["zip", "tar.gz"] as const) {
+    const name = kind === "zip" ? "alan-v2.0.0-windows-x64.zip" : "alan-v2.0.0-linux-x64.tar.gz";
+    it(`stops a ${kind} with more entries than allowed`, async () => {
+      await assert.rejects(extractArchive(path.join(FIXTURES, "v2.0.0", name), dest, kind, undefined, undefined,
+        { bytes: 1e9, entries: 2 }), { message: "The download is too large or unsafe. Nothing was installed." });
+    });
+    it(`stops a ${kind} that unpacks to more bytes than allowed`, async () => {
+      await assert.rejects(extractArchive(path.join(FIXTURES, "v2.0.0", name), dest, kind, undefined, undefined,
+        { bytes: 10, entries: 100 }), { message: "The download is too large or unsafe. Nothing was installed." });
+    });
+  }
+
   it("rejects a file that is not an archive", async () => {
     const junk = path.join(tmp, "junk");
     fs.writeFileSync(junk, "not an archive");
@@ -343,6 +439,15 @@ describe("release names", () => {
     assert.equal(GITHUB.apiLatest, "https://api.github.com/repos/sleousis/alan-compiler/releases/latest");
     assert.equal(GITHUB.download("v2.0.0", "SHA256SUMS"),
       "https://github.com/sleousis/alan-compiler/releases/download/v2.0.0/SHA256SUMS");
+  });
+  it("never follows a redirect from https to http", () => {
+    const u = (s: string) => new URL(s);
+    assert.ok(redirectAllowed(u("https://github.com/a"), u("https://objects.githubusercontent.com/b")));
+    assert.ok(redirectAllowed(u("http://127.0.0.1/a"), u("http://127.0.0.1/b")));
+    assert.ok(redirectAllowed(u("http://127.0.0.1/a"), u("https://example.com/b")));
+    assert.ok(!redirectAllowed(u("https://github.com/a"), u("http://github.com/b")));
+    assert.ok(!redirectAllowed(u("https://github.com/a"), u("file:///etc/passwd")));
+    assert.ok(!redirectAllowed(u("http://127.0.0.1/a"), u("ftp://example.com/b")));
   });
   it("compares tags", () => {
     assert.equal(MIN_COMPILER, "v2.0.0");
