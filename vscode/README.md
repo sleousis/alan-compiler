@@ -7,8 +7,8 @@ Write and run programs in Alan, the small Pascal-like teaching language, with th
 ## Features
 
 - **Highlighting** for keywords, comments (`--` and nested `(* *)`), strings, characters, numbers and function names.
-- **Live errors** while you type: syntax errors, undeclared names, duplicate names and wrong argument counts. They work even before a compiler is installed.
-- **Compiler errors on save.** When a compiler is installed, `alanc check` also runs on save and adds its type errors to the Problems panel.
+- **Live errors** while you type, with the compiler's own messages on the lines the compiler gives: syntax errors, bad literals, undeclared and duplicate names, type errors and wrong arguments. They work even before a compiler is installed. While a file has syntax errors, only those and errors in declarations show.
+- **Compiler errors on save.** When a compiler is installed, `alanc check` also runs on save and adds any error the live check missed to the Problems panel.
 - **Completion** for keywords, the 14 library functions, and the functions, parameters and variables visible at the cursor. Snippets for a function, `if`, `if-else` and `while`.
 - **Hover and signature help** that show declarations in Alan syntax, such as `swap (a : reference int, b : reference int) : proc`.
 - **Go to definition, find all references, highlights and an outline** with nested functions.
