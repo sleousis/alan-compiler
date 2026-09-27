@@ -8,7 +8,7 @@ using namespace llvm;
 typedef enum {
 	WHILE=0, IF=1, IFELSE=2, SEQ=3, RET=4, PAR=5, PARREF=6, TYPE=7, TYPEARR=8, PROC=9, VAR=10, ASS=11, ARREXPR=12, FUNCALL=13, FUNCDEF=14,
 	ID=15, CONST=16, CHAR=17, STRING=18, BOOL=19, PLUS=20, MINUS=21, TIMES=22, DIV=23, MOD=24, NOT=25, EQUALS=26, NOTEQUALS=27, LESSEQUALS=28, GREATEQUALS=29,
-	GREATER=30, LESS=31, AND=32, OR=33
+	GREATER=30, LESS=31, AND=32, OR=33, BLOCK=34
 } kind;
 
 extern bool opt;
@@ -59,6 +59,8 @@ ast ast_if (ast l, ast r, int line);
 ast ast_ifelse (ast l, ast r, int line);
 ast ast_ret (ast l, int line);
 ast ast_seq (ast l, ast r, int line);
+// A block { ... } used as a statement. line is the line of its "{".
+ast ast_block (ast body, int line);
 
 int ast_run (ast tree);
 Type_T ast_sem(ast tree, SymbolEntry * f);

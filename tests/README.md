@@ -51,6 +51,6 @@ python tests/run_rt_test.py
 ## Untested examples
 
 - `prog11` is not a case. It answered "no" to every magic square tried, so its expected behaviour is unknown.
-- `test2` is not a case. It calls a function with too few arguments and does not compile.
+- `test2` is not a case. It is a test of semantic errors and does not compile. Its first error is a call to the byte function `toUse2` as a statement, at line 34.
 - `papariatest` is not a case. It was a scratch test with dead code after a `return`, and it calls an int function as a statement, which the spec does not allow. It is an error test in `errors/expected.json`.
 - `test` is not a case. It reads the local `y` before setting it, so its output is undefined and can differ between platforms and runtimes.

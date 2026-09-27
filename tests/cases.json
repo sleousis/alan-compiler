@@ -468,5 +468,19 @@
     "file": "tests/regress/rt-stdin-bytes.alan",
     "input": "inputs/rt-stdin-bytes.txt",
     "opt": true
+  },
+  {
+    "name": "nesting_3000_blocks",
+    "file": "tests/regress/nesting_3000_blocks.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/nesting_3000_blocks.txt"
+  },
+  {
+    "name": "nesting_3000_blocks",
+    "file": "tests/regress/nesting_3000_blocks.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/nesting_3000_blocks.txt"
   }
 ]
