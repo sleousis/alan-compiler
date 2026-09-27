@@ -42,3 +42,8 @@
   interior : int;
 --^^^^^^^^ - storage.type.alan
 --^^ - keyword.control.alan
+  s = "no closing quote;
+--    ^^^^^^^^^^^^^^^^^^ string.quoted.double.alan
+  x = 1;
+--^ - string.quoted.double.alan
+--    ^ constant.numeric.integer.alan

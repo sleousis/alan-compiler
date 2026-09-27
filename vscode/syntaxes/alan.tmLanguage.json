@@ -32,8 +32,9 @@
     },
     "string": {
       "name": "string.quoted.double.alan",
+      "comment": "Strings cannot span lines, so an unterminated one stops at the end of its line.",
       "begin": "\"",
-      "end": "\"",
+      "end": "\"|$",
       "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.alan" } },
       "endCaptures": { "0": { "name": "punctuation.definition.string.end.alan" } },
       "patterns": [
@@ -66,7 +67,7 @@
       "match": "\\b(true|false)\\b"
     },
     "functionDeclaration": {
-      "comment": "A name at the start of a line followed by a parameter list and a colon: name (params) : type.",
+      "comment": "A name at the start of a line followed by a parameter list and a colon: name (params) : type. Headers split across lines are not highlighted.",
       "match": "^\\s*([A-Za-z][A-Za-z0-9_]*)(?=\\s*\\([^()]*\\)\\s*:)",
       "captures": { "1": { "name": "entity.name.function.alan" } }
     },

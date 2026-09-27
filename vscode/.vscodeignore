@@ -1,4 +1,6 @@
 .gitignore
+.vscode/**
+.vscode-test/**
 .mocharc.json
 esbuild.mjs
 tsconfig.json

@@ -21,7 +21,7 @@ describe("extension manifest", () => {
     assert.equal(readJson(grammar.path).scopeName, "source.alan");
   });
 
-  it("keeps @types/vscode within engines.vscode", () => {
+  it("pins @types/vscode to engines.vscode", () => {
     assert.equal(manifest.engines.vscode, `^${manifest.devDependencies["@types/vscode"]}`);
   });
 
