@@ -67,9 +67,10 @@ void di_function(DebugInfo *d, Function *f, const char *name, unsigned line,
     names.push_back(p.first);
   }
   DIScope *scope = d->open.empty() ? static_cast<DIScope *>(d->file) : d->open.back().sp;
-  StringRef linkage = f->getName() == name ? StringRef() : f->getName();
+  /* No linkage name: the program's main is main.1 in LLVM, and LLDB on
+     macOS would show that name in the frames. */
   DISubprogram *sp = d->b.createFunction(
-      scope, name, linkage, d->file, line,
+      scope, name, StringRef(), d->file, line,
       d->b.createSubroutineType(d->b.getOrCreateTypeArray(types)), line,
       DINode::FlagPrototyped, DISubprogram::SPFlagDefinition);
   f->setSubprogram(sp);

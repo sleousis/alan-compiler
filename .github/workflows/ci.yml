@@ -100,12 +100,14 @@ jobs:
 
       # zig builds libc for a target on its first link, which takes minutes
       # (most on Windows ARM64, where zig runs under emulation), so keep its
-      # global cache between runs.
+      # global cache between runs. On Windows a debug link builds another
+      # libc, so the key changed when the -g test came in.
       - name: Cache zig's libc builds
         uses: actions/cache@v6
         with:
           path: .zig-global-cache
-          key: zig-${{ matrix.platform }}-${{ steps.versions.outputs.zig }}
+          key: zig-${{ matrix.platform }}-${{ steps.versions.outputs.zig }}-g
+          restore-keys: zig-${{ matrix.platform }}-${{ steps.versions.outputs.zig }}
 
       - uses: actions/setup-python@v7
         if: runner.os != 'Linux'

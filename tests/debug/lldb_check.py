@@ -14,8 +14,10 @@ def main() -> int:
     a = ap.parse_args()
     with tempfile.TemporaryDirectory() as tmp:
         exe = pathlib.Path(tmp) / ("dbg.exe" if sys.platform == "win32" else "dbg")
+        # The first debug link for a target makes zig build its C library
+        # once more, which takes many minutes under emulation.
         r = subprocess.run([a.alanc, "build", "-g", str(SOURCE), "-o", str(exe)],
-                           stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=1800)
         if r.returncode != 0:
             print("FAIL alanc build -g exit", r.returncode)
             sys.stdout.write(r.stderr.decode("latin-1"))
