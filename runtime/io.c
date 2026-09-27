@@ -45,6 +45,7 @@ static int read_part(int32_t size, char *buf) {
     int32_t n = 0;
     int c;
     int ended = 0;
+    int cr_taken = 0;             /* the lookahead took the "\r" of "\r\n" */
     while (n < size - 1) {
         c = in_byte();
         if (c == '\n' || c == EOF) { ended = 1; break; }
@@ -56,13 +57,14 @@ static int read_part(int32_t size, char *buf) {
             ended = 1;
         } else if (c == '\r') {
             int d = in_byte();
-            if (d == '\n' || d == EOF) ended = 1;
+            if (d == '\n' || d == EOF) ended = cr_taken = 1;
             else { unread(d); unread(c); }
         } else {
             unread(c);
         }
     }
-    if (ended && n > 0 && buf[n - 1] == '\r') n--;
+    /* A "\r" in buf is dropped only when the line ends right after it. */
+    if (ended && !cr_taken && n > 0 && buf[n - 1] == '\r') n--;
     buf[n] = '\0';
     return ended;
 }

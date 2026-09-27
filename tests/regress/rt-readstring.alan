@@ -2,6 +2,7 @@
 main () : proc
   s : byte [4];
   t : byte [10];
+  u : byte [3];
 {
   readString(4, s);
   readString(10, t);
@@ -15,4 +16,9 @@ main () : proc
   readString(10, t);
   writeString("s=["); writeString(s); writeString("] ");
   writeString("t=["); writeString(t); writeString("]\n");
+  -- a line of "a", CR, CR, LF: "a" and one CR fill u, and CR LF ends the line
+  readString(3, u);
+  writeInteger(strlen(u)); writeString(" ");
+  readString(3, u);
+  writeInteger(strlen(u)); writeString("\n");
 }
