@@ -6,9 +6,10 @@
 // - Parameters and locals may shadow outer names, but not share a name with
 //   anything in their own scope, the function's own name included.
 // - A nested function may not reuse any name visible where it is declared.
-// - A call looks through every scope and then the library. A plain name finds
-//   variables and parameters, and a function's own name inside that function,
-//   but never another function or a library function.
+// - A call looks through every scope and then the library. A plain name never
+//   finds a library function. It finds a user function everywhere except in
+//   the body of the function that declares it, because the compiler files the
+//   name in that scope at the nesting level of the function's own scope.
 // It works on partial trees from files with syntax errors and never throws.
 import { Call, Cond, Diagnostic, Expr, FuncDecl, Stmt, VarDecl } from "./ast";
 import { LIBRARY } from "./library";
@@ -171,8 +172,8 @@ class Analyzer {
     const { sym } = found;
     if (indexed) {
       if (!this.arrays.has(sym)) this.error(`'${name}' is not an array`, range);
-    } else if (sym.kind === "library" || (sym.kind === "function" && found.scope.owner !== sym.decl)) {
-      // The compiler finds a function by plain name only inside that function itself.
+    } else if (sym.kind === "library" || (sym.kind === "function" && found.scope === scope && sym.decl !== scope.owner)) {
+      // The compiler misses a nested function by plain name only in the body that declares it.
       this.error(`'${name}' is a function, not a variable`, range);
     }
   }

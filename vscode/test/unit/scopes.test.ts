@@ -99,11 +99,14 @@ describe("scopes", () => {
   });
 
   it("treats a function name used as a value like the compiler", () => {
-    // Outside its own body the compiler does not find it. Inside, it accepts it.
+    // The compiler misses it only in the body that declares it, and never finds a library function.
     assert.deepEqual(messages("m () : proc\n x : int;\n f () : int\n { return 1; }\n{ x = f; x = writeInteger; }"),
       ["'f' is a function, not a variable", "'writeInteger' is a function, not a variable"]);
     assert.deepEqual(messages("m () : proc\n f () : int\n  x : int;\n { x = f; return 1; }\n{}"), []);
     assert.deepEqual(messages("m () : proc\n f () : int\n  x : int;\n { x = f[0]; return 1; }\n{}"), ["'f' is not an array"]);
+    // From a sibling or a deeper descendant it accepts it.
+    assert.deepEqual(messages("m () : proc\n x : int;\n h () : int\n { return 1; }\n g () : proc\n { x = h; }\n{ }"), []);
+    assert.deepEqual(messages("m () : proc\n x : int;\n h () : int\n { return 1; }\n g () : proc\n  k () : proc\n  { x = h; }\n { }\n{ }"), []);
   });
 
   it("records references with their targets", () => {
@@ -149,6 +152,13 @@ describe("scopes", () => {
     const a = run("m () : proc\n{ }");
     assert.equal(scopeAt(a.root, { line: 9, character: 0 }), a.root);
     assert.equal(scopeAt(a.root, { line: 1, character: 1 }).owner?.name, "m");
+  });
+
+  it("counts the position right after a nested function's closing brace as inside it", () => {
+    const a = run("m () : proc\n f () : proc\n { }\n{ }");
+    assert.equal(scopeAt(a.root, { line: 2, character: 3 }).owner?.name, "f");
+    assert.equal(scopeAt(a.root, { line: 2, character: 4 }).owner?.name, "f");
+    assert.equal(scopeAt(a.root, { line: 3, character: 0 }).owner?.name, "m");
   });
 });
 
