@@ -19,10 +19,13 @@
 // error they report is one the compiler would report once the earlier ones
 // are fixed. The diagnostics come in the order the compiler meets them.
 // It works on partial trees from files with syntax errors and never throws.
+// The walks are generators run by trampoline.ts, since nesting may be deep.
 import { Call, Cond, Diagnostic, Expr, FuncDecl, LValue, SemanticCode, Stmt, VarDecl } from "./ast";
 import { LIBRARY } from "./library";
 import { Pos, Range } from "./lexer";
 import { MSG, TypeWord } from "./messages";
+import { checkNesting } from "./nesting";
+import { Task, run } from "./trampoline";
 
 export type SymbolKind = "function" | "parameter" | "variable" | "library";
 /**
@@ -110,7 +113,7 @@ class Analyzer {
   }
 
   /** Checks a function definition, like checkFunction. The root scope holds the library. */
-  func(f: FuncDecl, parent: Scope) {
+  *func(f: FuncDecl, parent: Scope): Task<void> {
     const header = place(f.nameRange, f.at);
     const outermost = !parent.owner;
     if (outermost && f.params.length > 0) this.error("declaration", MSG.mainParameters(f.name), header);
@@ -131,7 +134,7 @@ class Analyzer {
 
     for (const local of f.locals) {
       if (local.kind === "func") {
-        this.func(local, scope);
+        yield this.func(local, scope);
         continue;
       }
       if (local.size !== undefined && local.size <= 0) this.error("declaration", MSG.arraySize, place(local.range, local.at));
@@ -141,42 +144,37 @@ class Analyzer {
       this.declare(scope, sym, place(local.nameRange, local.at));
     }
 
-    this.stmt(f.body, scope, f);
+    yield this.stmt(f.body, scope, f);
   }
 
-  private stmt(s: Stmt, scope: Scope, f: FuncDecl) {
+  private *stmt(s: Stmt, scope: Scope, f: FuncDecl): Task<void> {
     switch (s.kind) {
       case "block":
-        for (const inner of s.stmts) this.stmt(inner, scope, f);
+        for (const inner of s.stmts) yield this.stmt(inner, scope, f);
         break;
       case "assign": {
-        const left = this.lvalue(s.target, scope);
-        const right = this.expr(s.value, scope);
+        const left = (yield this.lvalue(s.target, scope)) as Type | undefined;
+        const right = (yield this.expr(s.value, scope)) as Type | undefined;
         if (!left || !right) break;
         const range = place(s.range, s.at);
         if (left.array || right.array) this.error("type", MSG.assignArray, range);
         else if (left.base !== right.base) this.error("type", MSG.assignTypes(left.base, right.base), range);
         break;
       }
-      case "call": {
-        const ret = this.call(s.call, scope);
-        // Only a proc may be called as a statement.
-        if (ret && ret.base !== "void") {
-          this.error("type", MSG.resultUnused(s.call.name, ret.base), place(s.call.range, s.call.at));
-        }
+      case "call":
+        yield this.call(s.call, scope, true);
         break;
-      }
       case "if":
-        this.cond(s.cond, scope);
-        this.stmt(s.then, scope, f);
-        if (s.else) this.stmt(s.else, scope, f);
+        yield this.cond(s.cond, scope);
+        yield this.stmt(s.then, scope, f);
+        if (s.else) yield this.stmt(s.else, scope, f);
         break;
       case "while":
-        this.cond(s.cond, scope);
-        this.stmt(s.body, scope, f);
+        yield this.cond(s.cond, scope);
+        yield this.stmt(s.body, scope, f);
         break;
       case "return":
-        this.ret(s, scope, f);
+        yield this.ret(s, scope, f);
         break;
       case "empty":
         break;
@@ -184,22 +182,22 @@ class Analyzer {
   }
 
   /** Like checkReturn. */
-  private ret(s: Extract<Stmt, { kind: "return" }>, scope: Scope, f: FuncDecl) {
+  private *ret(s: Extract<Stmt, { kind: "return" }>, scope: Scope, f: FuncDecl): Task<void> {
     const range = place(s.range, s.at);
     const want = resultType(f.ret);
     if (want.base === "void" && s.value) {
       this.error("type", MSG.procReturnsValue(f.name), range);
-      this.expr(s.value, scope);
+      yield this.expr(s.value, scope);
       return;
     }
-    const got = s.value ? this.expr(s.value, scope) : VOID;
+    const got = s.value ? (yield this.expr(s.value, scope)) as Type | undefined : VOID;
     if (!got) return;
     if (got.array) this.error("type", MSG.returnArray, range);
     else if (got.base !== want.base) this.error("type", MSG.mustReturn(f.name, want.base), range);
   }
 
   /** Like checkElement and checkName: the type of an l-value, or undefined after an error. */
-  private lvalue(e: LValue, scope: Scope): Type | undefined {
+  private *lvalue(e: LValue, scope: Scope): Task<Type | undefined> {
     switch (e.kind) {
       case "string":
         return { base: "byte", array: true };
@@ -210,10 +208,10 @@ class Analyzer {
         const array = this.name(e.name, e.nameRange, e.at, scope);
         if (array && !array.array) {
           this.error("not-an-array", MSG.expectedArray, place(e.nameRange, e.at));
-          this.expr(e.index, scope);
+          yield this.expr(e.index, scope);
           return undefined;
         }
-        const index = this.expr(e.index, scope);
+        const index = (yield this.expr(e.index, scope)) as Type | undefined;
         if (!array) return undefined;
         if (index && (index.base !== "int" || index.array)) this.error("type", MSG.indexNotInt, place(e.index.range, e.at));
         return { base: array.base, array: false };
@@ -236,27 +234,34 @@ class Analyzer {
     return this.types.get(sym);
   }
 
-  /** Like checkCall: the result type of a call, or undefined when the name is no function. */
-  private call(c: Call, scope: Scope): Type | undefined {
+  /**
+   * Like checkCall: the result type of a call, or undefined when the name is
+   * no function. A call statement must call a proc.
+   */
+  private *call(c: Call, scope: Scope, statement = false): Task<Type | undefined> {
     const sym = this.lookup(scope, c.name, true);
     this.reference(c.name, c.nameRange, sym);
     const at = (natural: Range) => place(natural, c.at);
-    const walkArgs = (from: number) => { for (const a of c.args.slice(from)) this.expr(a, scope); };
+    const self = this;
+    function* walkArgs(from: number): Task<void> {
+      for (const a of c.args.slice(from)) yield self.expr(a, scope);
+    }
     if (!sym) {
       this.error("unknown-name", MSG.functionNotDeclared(c.name), at(c.nameRange));
-      walkArgs(0);
+      yield walkArgs(0);
       return undefined;
     }
     if (!isFunction(sym)) {
       this.error("not-a-function", MSG.notAFunction(c.name), at(c.nameRange));
-      walkArgs(0);
+      yield walkArgs(0);
       return undefined;
     }
     const ret = resultType(sym.typeText);
+    if (statement && ret.base !== "void") this.error("type", MSG.resultUnused(c.name, ret.base), at(c.range));
     const params = (sym.params ?? []).map((p) => ({ name: p.name, ...parseParamType(p.type) }));
     if (params.length === 0 && c.args.length > 0) {
       this.error("argument-count", MSG.noParameters(c.name), at(c.nameRange));
-      walkArgs(0);
+      yield walkArgs(0);
       return ret;
     }
     if (params.length > 0 && c.args.length === 0) {
@@ -266,12 +271,12 @@ class Analyzer {
     for (let i = 0; i < c.args.length; i++) {
       if (i >= params.length) {
         this.error("argument-count", MSG.tooManyArguments(c.name), at(c.nameRange));
-        walkArgs(i);
+        yield walkArgs(i);
         return ret;
       }
       const arg = c.args[i];
       const p = params[i];
-      const type = this.expr(arg, scope);
+      const type = (yield this.expr(arg, scope)) as Type | undefined;
       if (!type) continue;
       if (type.array !== p.type.array) {
         this.error("type", p.type.array ? MSG.arrayExpected(p.name) : MSG.noArraysAllowed(p.name), at(arg.range));
@@ -294,7 +299,7 @@ class Analyzer {
    * the left side is walked in a loop. A unary minus or plus is 0 - x or
    * 0 + x to the compiler, so its left operand is an int.
    */
-  private expr(e: Expr, scope: Scope): Type | undefined {
+  private *expr(e: Expr, scope: Scope): Task<Type | undefined> {
     const chain: Extract<Expr, { kind: "binary" | "unary" }>[] = [];
     let first: Expr = e;
     while (first.kind === "binary" || first.kind === "unary") {
@@ -302,26 +307,26 @@ class Analyzer {
       if (first.kind === "unary") break;
       first = first.left;
     }
-    let type = first.kind === "unary" ? INT : this.operand(first, scope);
+    let type = first.kind === "unary" ? INT : (yield this.operand(first, scope)) as Type | undefined;
     for (let i = chain.length - 1; i >= 0; i--) {
       const op = chain[i];
-      const right = this.expr(op.kind === "unary" ? op.operand : op.right, scope);
+      const right = (yield this.expr(op.kind === "unary" ? op.operand : op.right, scope)) as Type | undefined;
       type = this.operands(op.op, type, right, place(op.range, op.at));
     }
     return type;
   }
 
   /** The type of an expression that is not an operator. */
-  private operand(e: Exclude<Expr, { kind: "binary" | "unary" }>, scope: Scope): Type | undefined {
+  private *operand(e: Exclude<Expr, { kind: "binary" | "unary" }>, scope: Scope): Task<Type | undefined> {
     switch (e.kind) {
       case "int":
         return INT;
       case "char":
         return BYTE;
       case "call":
-        return this.call(e, scope);
+        return (yield this.call(e, scope)) as Type | undefined;
       default:
-        return this.lvalue(e, scope);
+        return (yield this.lvalue(e, scope)) as Type | undefined;
     }
   }
 
@@ -340,7 +345,7 @@ class Analyzer {
   }
 
   /** Walks a condition. Chains of & and | nest on the left and can be very long, so this uses a stack. */
-  private cond(root: Cond, scope: Scope) {
+  private *cond(root: Cond, scope: Scope): Task<void> {
     const stack: Cond[] = [root];
     while (stack.length) {
       const c = stack.pop()!;
@@ -351,9 +356,12 @@ class Analyzer {
         case "logic":
           stack.push(c.right, c.left);
           break;
-        case "compare":
-          this.operands(c.op, this.expr(c.left, scope), this.expr(c.right, scope), place(c.range, c.at));
+        case "compare": {
+          const left = (yield this.expr(c.left, scope)) as Type | undefined;
+          const right = (yield this.expr(c.right, scope)) as Type | undefined;
+          this.operands(c.op, left, right, place(c.range, c.at));
           break;
+        }
         case "bool":
           break;
       }
@@ -364,8 +372,10 @@ class Analyzer {
 export function analyze(program: FuncDecl): Analysis {
   const root: Scope = { symbols: new Map(LIBRARY.map((f) => [f.name, librarySym(f)])), children: [], range: program.range };
   const analyzer = new Analyzer();
-  analyzer.func(program, root);
-  return { root, diagnostics: analyzer.diagnostics, references: analyzer.references };
+  // The compiler checks the nesting before anything else.
+  const nesting = checkNesting(program);
+  run(analyzer.func(program, root));
+  return { root, diagnostics: [...nesting, ...analyzer.diagnostics], references: analyzer.references };
 }
 
 /** The innermost function scope around a position, or the root when outside every function. */

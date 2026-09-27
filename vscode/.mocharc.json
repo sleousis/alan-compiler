@@ -2,6 +2,5 @@
   "require": ["tsx/cjs"],
   "extension": ["ts"],
   "spec": ["test/unit/**/*.test.ts"],
-  "timeout": 10000,
-  "node-option": ["stack-size=4000"]
+  "timeout": 10000
 }

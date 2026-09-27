@@ -32,7 +32,7 @@ describe("scopes", () => {
   });
   it("reports the error in Examples/test2", () => {
     const src = fs.readFileSync(path.join(repo, "Examples/test2"), "utf8");
-    assert.equal(lines(src)[0], "34: Error at Parameter n3, there must exist more Parameters.");
+    assert.equal(lines(src)[0], "34: Function toUse2 returns byte, so it cannot be called as a statement.");
   });
 
   // papariatest.alan calls an int function as a statement, which is an error.
@@ -199,6 +199,11 @@ describe("scopes", () => {
       assert.deepEqual(messages("m () : proc\n f () : byte { return 'a'; }\n{ f(); readInteger(); writeInteger(1); }"), [
         "Function f returns byte, so it cannot be called as a statement.",
         "Function readInteger returns int, so it cannot be called as a statement.",
+      ]);
+      // It comes before the checks of the arguments, as in the compiler.
+      assert.deepEqual(messages("m () : proc\n f (a : int) : int { return a; }\n{ f(); }"), [
+        "Function f returns int, so it cannot be called as a statement.",
+        "Function f must have Parameters.",
       ]);
     });
     it("reports the main function's parameters", () => {

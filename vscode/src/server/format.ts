@@ -5,6 +5,7 @@
 import { Block, FuncDecl, Stmt } from "./ast";
 import { Comment, Pos, Range, Token, TokenKind, lex } from "./lexer";
 import { parse } from "./parser";
+import { Task, run } from "./trampoline";
 
 export interface FormatOptions { tabSize: number; insertSpaces: boolean; }
 
@@ -46,7 +47,8 @@ interface LineStarts {
 
 /**
  * Finds the first token of every line and its indent depth, by walking the
- * tree. Tokens that are not in the map continue the line before them.
+ * tree. Tokens that are not in the map continue the line before them. The
+ * walk is a set of generators run by trampoline.ts, since nesting may be deep.
  */
 function lineStarts(program: FuncDecl, tokens: Token[]): LineStarts {
   const byStart = new Map<string, number>();
@@ -62,42 +64,42 @@ function lineStarts(program: FuncDecl, tokens: Token[]): LineStarts {
   const headerNames = new Set<number>();
   const mark = (p: Pos, depth: number) => indent.set(find(byStart, p), depth);
 
-  const func = (f: FuncDecl, depth: number) => {
+  function* func(f: FuncDecl, depth: number): Task<void> {
     mark(f.nameRange.start, depth);
     headerNames.add(find(byStart, f.nameRange.start));
     for (const l of f.locals) {
-      if (l.kind === "func") func(l, depth + 1);
+      if (l.kind === "func") yield func(l, depth + 1);
       else mark(l.range.start, depth + 1);
     }
-    block(f.body, depth, false);
-  };
-  const block = (b: Block, depth: number, onSameLine: boolean) => {
+    yield block(f.body, depth, false);
+  }
+  function* block(b: Block, depth: number, onSameLine: boolean): Task<void> {
     if (onSameLine) joined.set(find(byStart, b.range.start), depth);
     else mark(b.range.start, depth);
-    for (const s of b.stmts) stmt(s, depth + 1, false);
+    for (const s of b.stmts) yield stmt(s, depth + 1, false);
     indent.set(find(byEnd, b.range.end), depth);
-  };
+  }
   /** The body of an if, else or while: a block opens on the same line, anything else goes one deeper. */
-  const body = (s: Stmt, depth: number) => {
-    if (s.kind === "block") block(s, depth, true);
-    else stmt(s, depth + 1, false);
-  };
-  const stmt = (s: Stmt, depth: number, onSameLine: boolean) => {
-    if (s.kind === "block") { block(s, depth, onSameLine); return; }
+  function* body(s: Stmt, depth: number): Task<void> {
+    if (s.kind === "block") yield block(s, depth, true);
+    else yield stmt(s, depth + 1, false);
+  }
+  function* stmt(s: Stmt, depth: number, onSameLine: boolean): Task<void> {
+    if (s.kind === "block") { yield block(s, depth, onSameLine); return; }
     if (onSameLine) joined.set(find(byStart, s.range.start), depth);
     else mark(s.range.start, depth);
     if (s.kind === "if") {
-      body(s.then, depth);
+      yield body(s.then, depth);
       if (s.else) {
         indent.set(find(byEnd, s.then.range.end) + 1, depth);
-        if (s.else.kind === "if") stmt(s.else, depth, true);
-        else body(s.else, depth);
+        if (s.else.kind === "if") yield stmt(s.else, depth, true);
+        else yield body(s.else, depth);
       }
     } else if (s.kind === "while") {
-      body(s.body, depth);
+      yield body(s.body, depth);
     }
-  };
-  func(program, 0);
+  }
+  run(func(program, 0));
   return { indent, joined, headerNames };
 }
 

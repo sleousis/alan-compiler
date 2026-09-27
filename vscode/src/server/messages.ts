@@ -17,6 +17,9 @@ export const MSG = {
   illegalPhrase: "Illegal phrase!",
   illegalCharacter: "Illegal character or phrase!",
 
+  // ast.cpp, check_nesting
+  nestingTooDeep: "Nesting is too deep",
+
   // symbol.cpp
   duplicate: (name: string) => `Duplicate identifier: ${name}`,
 

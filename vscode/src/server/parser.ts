@@ -1,27 +1,22 @@
 // Recursive descent parser for Alan. It follows the grammar of parser.y at the
 // repository root and keeps going after errors, so the editor can show every
 // problem in a file at once and still build a tree for the rest of it.
+//
+// The compiler takes nesting of any depth here, and limits some kinds of it
+// later (see nesting.ts). So the recursive rules are generators run by
+// trampoline.ts, and nesting costs memory instead of stack.
 import {
   Block, Call, Cond, DataType, Diagnostic, Expr, FuncDecl, LValue, Param, Stmt, TypeRef, VarDecl,
 } from "./ast";
 import { Pos, Range, Token, TokenKind, lex } from "./lexer";
+import { Task, run } from "./trampoline";
 
 /** Thrown after an error is reported. The nearest statement or declaration catches it and resyncs. */
 class ParseError {}
 
 type RelOp = Extract<Cond, { kind: "compare" }>["op"];
-
-/**
- * Deepest nesting of blocks, statements, parentheses and functions the parser
- * follows. The compiler takes nesting far deeper, and its tests nest 2000
- * statements. The parser and the checks recurse once per level, so the
- * server runs with a 4 MB stack (SERVER_STACK_KB in extension.ts), which
- * holds about 5000 levels.
- */
-const MAX_DEPTH = 3000;
-const TOO_DEEP = "Nesting is too deep";
-
-const CLOSERS: Partial<Record<TokenKind, TokenKind>> = { "(": ")", "[": "]", "{": "}" };
+/** What a failed try of "(" cond ")" reported, see parenCond. */
+type ParenFailure = { failedAt: number; diagnostics: Diagnostic[]; errors: number };
 
 const REL_OPS = new Set<TokenKind>(["==", "!=", "<", ">", "<=", ">="]);
 const ARITH_OPS = new Set<TokenKind>(["+", "-", "*", "/", "%"]);
@@ -35,8 +30,6 @@ class Parser {
   private pos = 0;
   /** Errors met so far, reported or not. A speculative parse failed when this grew. */
   private errorCount = 0;
-  /** Current nesting depth, see nested(). */
-  private depth = 0;
   /** Start positions that already carry a diagnostic. */
   private readonly reported: Set<string>;
   /**
@@ -118,39 +111,6 @@ class Parser {
     for (const d of this.diagnostics.splice(n)) this.reported.delete(posKey(d.range.start));
   }
 
-  /**
-   * Runs one level of nesting. Past MAX_DEPTH it reports "Nesting is too
-   * deep" (once per file), skips the bracketed group that starts here and
-   * fails, so the stack never overflows and normal recovery takes over.
-   */
-  private nested<T>(parse: () => T): T {
-    if (this.depth >= MAX_DEPTH) {
-      const t = this.peek();
-      if (this.diagnostics.some((d) => d.message === TOO_DEEP)) this.errorCount++;
-      else this.report(TOO_DEEP, t.range, t);
-      const close = CLOSERS[t.kind];
-      if (close) this.skipGroup(t.kind, close);
-      throw new ParseError();
-    }
-    this.depth++;
-    try {
-      return parse();
-    } finally {
-      this.depth--;
-    }
-  }
-
-  /** Skips from an opening bracket past its matching closing one, or to the end of the file. */
-  private skipGroup(open: TokenKind, close: TokenKind) {
-    let level = 0;
-    do {
-      const k = this.next().kind;
-      if (k === open) level++;
-      else if (k === close) level--;
-      else if (k === "eof") return;
-    } while (level > 0);
-  }
-
   /** Last resort for a bug in the parser: report it at the current token instead of throwing. */
   internalError(e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
@@ -219,20 +179,20 @@ class Parser {
 
   // ---- declarations -------------------------------------------------------
 
-  program(): FuncDecl | undefined {
+  *program(): Task<FuncDecl | undefined> {
     let program: FuncDecl | undefined;
     if (!this.at("id")) {
       this.unexpected("a function definition");
       this.next();
       while (!this.at("eof") && !(this.at("id") && this.peek(1).kind === "(")) this.next();
     }
-    if (this.at("id")) program = this.funcDef();
+    if (this.at("id")) program = (yield this.funcDef()) as FuncDecl;
     if (!this.at("eof")) this.unexpected("end of file");
     return program;
   }
 
   /** funcDef = id "(" [param {"," param}] ")" ":" (dataType | "proc") {localDef} block */
-  private funcDef(): FuncDecl {
+  private *funcDef(): Task<FuncDecl> {
     const nameTok = this.next();
     const params: Param[] = [];
     let ret: DataType | "proc" = "proc";
@@ -258,7 +218,7 @@ class Parser {
     while (!this.at("{") && !this.at("eof")) {
       const from = this.pos;
       try {
-        if (this.at("id") && this.peek(1).kind === "(") locals.push(this.nested(() => this.funcDef()));
+        if (this.at("id") && this.peek(1).kind === "(") locals.push((yield this.funcDef()) as FuncDecl);
         else if (this.at("id") && this.peek(1).kind === ":") locals.push(this.varDef());
         else if (this.at("id")) { this.next(); this.fail("':' or '('"); }
         else this.fail("'{'");
@@ -269,7 +229,7 @@ class Parser {
     }
 
     let body: Block;
-    if (this.at("{")) body = this.block();
+    if (this.at("{")) body = (yield this.block()) as Block;
     else {
       this.unexpected("'{'");
       body = { kind: "block", stmts: [], range: this.peek().range };
@@ -322,11 +282,11 @@ class Parser {
   // ---- statements ---------------------------------------------------------
 
   /** block = "{" {stmt} "}". A missing "}" is reported but the block is kept. */
-  private block(): Block {
+  private *block(): Task<Block> {
     const open = this.next();
     const stmts: Stmt[] = [];
     while (!this.at("}") && !this.at("eof")) {
-      const s = this.stmt();
+      const s = (yield this.stmt()) as Stmt | undefined;
       if (s) stmts.push(s);
     }
     if (!this.eat("}")) this.unexpected("'}'");
@@ -334,10 +294,10 @@ class Parser {
   }
 
   /** Parses one statement, or skips a broken one and returns undefined. */
-  private stmt(): Stmt | undefined {
+  private *stmt(): Task<Stmt | undefined> {
     const from = this.pos;
     try {
-      return this.stmtOrThrow();
+      return (yield this.stmtOrThrow()) as Stmt;
     } catch (e) {
       if (!(e instanceof ParseError)) throw e;
       this.syncStmt(from);
@@ -346,37 +306,31 @@ class Parser {
   }
 
   /** A statement that must be there, such as the body of an if. A broken one becomes empty. */
-  private innerStmt(): Stmt {
+  private *innerStmt(): Task<Stmt> {
     const first = this.peek();
     const from = this.pos;
-    let s: Stmt | undefined;
-    try {
-      s = this.nested(() => this.stmt());
-    } catch (e) {
-      if (!(e instanceof ParseError)) throw e;
-      this.syncStmt(from);
-    }
+    const s = (yield this.stmt()) as Stmt | undefined;
     if (s) return s;
     const at = first.range.start;
     return { kind: "empty", range: this.pos > from ? this.span(first) : { start: at, end: at } };
   }
 
-  private stmtOrThrow(): Stmt {
+  private *stmtOrThrow(): Task<Stmt> {
     const first = this.peek();
     switch (first.kind) {
       case ";":
         this.next();
         return { kind: "empty", range: first.range };
       case "{":
-        return this.nested(() => this.block());
+        return (yield this.block()) as Block;
       case "kw_if": {
         this.next();
         this.expect("(");
-        const cond = this.cond();
+        const cond = (yield this.cond()) as Cond;
         this.expect(")");
-        const then = this.innerStmt();
+        const then = (yield this.innerStmt()) as Stmt;
         if (this.eat("kw_else")) {
-          const otherwise = this.innerStmt();
+          const otherwise = (yield this.innerStmt()) as Stmt;
           return { kind: "if", cond, then, else: otherwise, range: this.span(first) };
         }
         return { kind: "if", cond, then, range: this.span(first) };
@@ -384,53 +338,50 @@ class Parser {
       case "kw_while": {
         this.next();
         this.expect("(");
-        const cond = this.cond();
+        const cond = (yield this.cond()) as Cond;
         this.expect(")");
-        const body = this.innerStmt();
+        const body = (yield this.innerStmt()) as Stmt;
         return { kind: "while", cond, body, range: this.span(first) };
       }
       case "kw_return": {
         this.next();
-        const value = this.atExprStart() ? this.expr() : undefined;
+        const value = this.atExprStart() ? (yield this.expr()) as Expr : undefined;
         this.expectSemicolon();
         const at = this.prev().range;
         return value ? { kind: "return", value, range: this.span(first), at } : { kind: "return", range: this.span(first), at };
       }
       case "id":
         if (this.peek(1).kind === "(") {
-          const call = this.call();
+          const call = (yield this.call()) as Call;
           this.expectSemicolon();
           return { kind: "call", call, range: this.span(first) };
         }
-        return this.assignment();
+        return (yield this.assignment()) as Stmt;
       case "string":
-        return this.assignment();
+        return (yield this.assignment()) as Stmt;
       default:
         return this.fail("a statement");
     }
   }
 
   /** lvalue "=" expr ";" */
-  private assignment(): Stmt {
+  private *assignment(): Task<Stmt> {
     const first = this.peek();
-    const target = this.lvalue();
+    const target = (yield this.lvalue()) as LValue;
     this.expect("=", target.kind === "name" ? "'=', '[' or '('" : "'='");
-    const value = this.expr();
+    const value = (yield this.expr()) as Expr;
     this.expectSemicolon();
     return { kind: "assign", target, value, range: this.span(first), at: this.prev().range };
   }
 
   /** lvalue = id ["[" expr "]"] | string */
-  private lvalue(): LValue {
+  private *lvalue(): Task<LValue> {
     const t = this.next();
     if (t.kind === "string") return { kind: "string", value: t.text, range: t.range };
     if (this.at("[")) {
-      const index = this.nested(() => {
-        this.next();
-        const inner = this.expr();
-        this.expect("]");
-        return inner;
-      });
+      this.next();
+      const index = (yield this.expr()) as Expr;
+      this.expect("]");
       return { kind: "index", name: t.text, nameRange: t.range, index, range: this.span(t), at: this.prev().range };
     }
     const name: LValue = { kind: "name", name: t.text, range: t.range, at: this.peek().range };
@@ -439,18 +390,15 @@ class Parser {
   }
 
   /** id "(" [expr {"," expr}] ")" */
-  private call(): Call {
+  private *call(): Task<Call> {
     const nameTok = this.next();
-    const args = this.nested(() => {
-      this.next();
-      const list: Expr[] = [];
-      if (!this.at(")")) {
-        list.push(this.expr());
-        while (this.eat(",")) list.push(this.expr());
-      }
-      this.expect(")", "',' or ')'");
-      return list;
-    });
+    this.next();
+    const args: Expr[] = [];
+    if (!this.at(")")) {
+      args.push((yield this.expr()) as Expr);
+      while (this.eat(",")) args.push((yield this.expr()) as Expr);
+    }
+    this.expect(")", "',' or ')'");
     return { kind: "call", name: nameTok.text, nameRange: nameTok.range, args, range: this.span(nameTok), at: this.prev().range };
   }
 
@@ -462,12 +410,12 @@ class Parser {
   }
 
   /** expr = term {("+"|"-") term} */
-  private expr(): Expr {
+  private *expr(): Task<Expr> {
     const first = this.peek();
-    let left = this.term();
+    let left = (yield this.term()) as Expr;
     while (this.at("+") || this.at("-")) {
       const op = this.next().kind as "+" | "-";
-      const right = this.term();
+      const right = (yield this.term()) as Expr;
       left = { kind: "binary", op, left, right, range: this.span(first), at: this.lineToken(true) };
       this.lookahead.add(left);
     }
@@ -475,12 +423,12 @@ class Parser {
   }
 
   /** term = unary {("*"|"/"|"%") unary} */
-  private term(): Expr {
+  private *term(): Task<Expr> {
     const first = this.peek();
-    let left = this.unary();
+    let left = (yield this.unary()) as Expr;
     while (this.at("*") || this.at("/") || this.at("%")) {
       const op = this.next().kind as "*" | "/" | "%";
-      const right = this.unary();
+      const right = (yield this.unary()) as Expr;
       const held = this.lookahead.has(right);
       left = { kind: "binary", op, left, right, range: this.span(first), at: this.lineToken(held) };
       if (held) this.lookahead.add(left);
@@ -489,21 +437,21 @@ class Parser {
   }
 
   /** unary = ("+"|"-") unary | primary */
-  private unary(): Expr {
+  private *unary(): Task<Expr> {
     const first = this.peek();
     if (first.kind === "+" || first.kind === "-") {
       this.next();
-      const operand = this.nested(() => this.unary());
+      const operand = (yield this.unary()) as Expr;
       const held = this.lookahead.has(operand);
       const node: Expr = { kind: "unary", op: first.kind, operand, range: this.span(first), at: this.lineToken(held) };
       if (held) this.lookahead.add(node);
       return node;
     }
-    return this.primary();
+    return (yield this.primary()) as Expr;
   }
 
   /** primary = int | char | "(" expr ")" | id "(" args ")" | lvalue */
-  private primary(): Expr {
+  private *primary(): Task<Expr> {
     const t = this.peek();
     switch (t.kind) {
       case "int":
@@ -512,19 +460,18 @@ class Parser {
       case "char":
         this.next();
         return { kind: "char", text: t.text, range: t.range };
-      case "(":
-        return this.nested(() => {
-          this.next();
-          const inner = this.expr();
-          this.expect(")");
-          // The ")" is read, so nothing is held after the parentheses.
-          this.lookahead.delete(inner);
-          return inner;
-        });
+      case "(": {
+        this.next();
+        const inner = (yield this.expr()) as Expr;
+        this.expect(")");
+        // The ")" is read, so nothing is held after the parentheses.
+        this.lookahead.delete(inner);
+        return inner;
+      }
       case "id":
-        return this.peek(1).kind === "(" ? this.call() : this.lvalue();
+        return (yield this.peek(1).kind === "(" ? this.call() : this.lvalue()) as Expr;
       case "string":
-        return this.lvalue();
+        return (yield this.lvalue()) as Expr;
       default:
         return this.fail("an expression");
     }
@@ -533,48 +480,48 @@ class Parser {
   // ---- conditions ---------------------------------------------------------
 
   /** cond = andCond {"|" andCond} */
-  private cond(): Cond {
+  private *cond(): Task<Cond> {
     const first = this.peek();
-    let left = this.andCond();
+    let left = (yield this.andCond()) as Cond;
     while (this.eat("|")) {
-      const right = this.andCond();
+      const right = (yield this.andCond()) as Cond;
       left = { kind: "logic", op: "|", left, right, range: this.span(first) };
     }
     return left;
   }
 
   /** andCond = notCond {"&" notCond} */
-  private andCond(): Cond {
+  private *andCond(): Task<Cond> {
     const first = this.peek();
-    let left = this.notCond();
+    let left = (yield this.notCond()) as Cond;
     while (this.eat("&")) {
-      const right = this.notCond();
+      const right = (yield this.notCond()) as Cond;
       left = { kind: "logic", op: "&", left, right, range: this.span(first) };
     }
     return left;
   }
 
   /** notCond = "!" notCond | condAtom */
-  private notCond(): Cond {
+  private *notCond(): Task<Cond> {
     const first = this.peek();
     if (this.eat("!")) {
-      const operand = this.nested(() => this.notCond());
+      const operand = (yield this.notCond()) as Cond;
       return { kind: "not", operand, range: this.span(first) };
     }
-    return this.condAtom();
+    return (yield this.condAtom()) as Cond;
   }
 
   /** condAtom = "true" | "false" | "(" cond ")" | expr relop expr */
-  private condAtom(): Cond {
+  private *condAtom(): Task<Cond> {
     const first = this.peek();
     if (this.eat("kw_true")) return { kind: "bool", value: true, range: first.range };
     if (this.eat("kw_false")) return { kind: "bool", value: false, range: first.range };
-    if (first.kind !== "(") return this.comparison();
-    const tried = this.nested(() => this.parenCond());
+    if (first.kind !== "(") return (yield this.comparison()) as Cond;
+    const tried = (yield this.parenCond()) as Cond | ParenFailure;
     if (!("failedAt" in tried)) return tried;
     const saved = { diagnostics: this.diagnostics.length, errors: this.errorCount };
     try {
-      return this.comparison();
+      return (yield this.comparison()) as Cond;
     } catch (e) {
       // Both readings failed. Keep the error of the one that got further.
       if (e instanceof ParseError && tried.failedAt > this.pos) {
@@ -588,13 +535,13 @@ class Parser {
   }
 
   /** expr relop expr */
-  private comparison(): Cond {
+  private *comparison(): Task<Cond> {
     const first = this.peek();
-    const left = this.expr();
+    const left = (yield this.expr()) as Expr;
     const opTok = this.peek();
     if (!REL_OPS.has(opTok.kind)) this.fail("a comparison operator");
     this.next();
-    const right = this.expr();
+    const right = (yield this.expr()) as Expr;
     return { kind: "compare", op: opTok.kind as RelOp, left, right, range: this.span(first), at: this.lineToken(true) };
   }
 
@@ -604,12 +551,12 @@ class Parser {
    * such as "(x + 1) * 2 > 3"), it rewinds and returns what the failed try
    * reported, with the token index where it stopped (-1 when it parsed).
    */
-  private parenCond(): Cond | { failedAt: number; diagnostics: Diagnostic[]; errors: number } {
+  private *parenCond(): Task<Cond | ParenFailure> {
     const saved = { pos: this.pos, diagnostics: this.diagnostics.length, errors: this.errorCount };
     let inner: Cond | undefined;
     try {
       this.next();
-      inner = this.cond();
+      inner = (yield this.cond()) as Cond;
       this.expect(")");
     } catch (e) {
       if (!(e instanceof ParseError)) throw e;
@@ -637,7 +584,7 @@ export function parse(src: string): { program?: FuncDecl; diagnostics: Diagnosti
   const parser = new Parser(tokens, diagnostics);
   let program: FuncDecl | undefined;
   try {
-    program = parser.program();
+    program = run(parser.program());
   } catch (e) {
     parser.internalError(e);
   }

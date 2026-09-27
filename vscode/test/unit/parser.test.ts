@@ -108,47 +108,41 @@ describe("parser", () => {
     }
   });
 
-  const tooDeep = (src: string) =>
-    parse(src).diagnostics.filter(d => d.message === "Nesting is too deep").length;
-  const n = 10000;
-  it("stops at deeply nested parentheses in a condition", () => {
-    assert.equal(tooDeep(`m () : proc\n x : int;\n{ if (${"(".repeat(n)}x == 1${")".repeat(n)}) ; }`), 1);
-  });
-  it("stops at deeply nested parentheses in an expression", () => {
-    const r = body(`x = ${"(".repeat(n)}1${")".repeat(n)}; x = 2;`);
-    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
-    assert.equal(r.program!.body.stmts.length, 1);
-  });
-  it("stops at deeply nested blocks", () => {
-    const r = body(`${"{".repeat(n)}${"}".repeat(n)}`);
-    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
-  });
-  it("stops at other deep chains without throwing", () => {
-    assert.equal(tooDeep(`m () : proc\n{ ${"if (true) ".repeat(n)}; }`), 1);
-    assert.equal(tooDeep(`m () : proc\n{ if (${"!".repeat(n)}true) ; }`), 1);
-    assert.equal(tooDeep(`m () : proc\n x : int;\n{ x = ${"- ".repeat(n)}1; }`), 1);
-  });
-  it("stops at deeply nested function definitions", () => {
+  // The compiler parses nesting of any depth, and limits only some kinds
+  // of it later (nesting.ts). The parser runs on a trampoline, so none of
+  // these reach the stack limit, with the default stack of Node.
+  const n = 20000;
+  const deep: [string, string][] = [
+    ["parentheses in a condition", `if (${"(".repeat(n)}x == 1${")".repeat(n)}) ;`],
+    ["parentheses in an expression", `x = ${"(".repeat(n)}1${")".repeat(n)};`],
+    ["blocks", `${"{".repeat(n)}${"}".repeat(n)}`],
+    ["if statements", `${"if (true) ".repeat(n)};`],
+    ["else-if chains", `${"if (true) ; else ".repeat(n)};`],
+    ["while statements", `${"while (true) ".repeat(n)};`],
+    ["! operators", `if (${"!".repeat(n)}true) ;`],
+    ["unary minus", `x = ${"- ".repeat(n)}1;`],
+    ["right operands", `x = ${"x + (".repeat(n)}1${")".repeat(n)};`],
+    ["call arguments", `x = ${"f(".repeat(n)}1${")".repeat(n)};`],
+    ["array indexes", `x = ${"a[".repeat(n)}0${"]".repeat(n)};`],
+  ];
+  for (const [what, stmts] of deep) {
+    it(`parses ${n} nested ${what}`, () => {
+      const r = body(stmts);
+      assert.deepEqual(r.diagnostics, []);
+      assert.equal(r.program!.body.stmts.length, 1);
+    });
+  }
+  it(`parses ${n} nested function definitions`, () => {
     const r = parse(`${"f () : proc\n".repeat(n)}${"{ }\n".repeat(n)}`);
-    assert.deepEqual(r.diagnostics.map(d => [d.range.start, d.message]), [
-      [{ line: 3001, character: 0 }, "Nesting is too deep"],
-      [{ line: 13001, character: 0 }, "expected end of file but found '{'"],
-    ]);
+    assert.deepEqual(r.diagnostics, []);
+    let f = r.program!;
+    for (let i = 1; i < n; i++) f = f.locals[0] as typeof f;
+    assert.deepEqual(f.locals, []);
   });
-  it("stops at deeply nested call arguments and keeps the next statement", () => {
-    const r = body(`${"f(".repeat(n)}1${")".repeat(n)}; g();`);
-    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
+  it("recovers after an error deep inside nesting", () => {
+    const r = body(`x = ${"(".repeat(n)}1 +${")".repeat(n)}; g();`);
+    assert.deepEqual(r.diagnostics.map(d => d.message), ["expected an expression but found ')'"]);
     assert.deepEqual(r.program!.body.stmts.map(s => s.kind), ["call"]);
-  });
-  it("stops at deeply nested array indexes and keeps the next statement", () => {
-    const r = body(`x = ${"a[".repeat(n)}0${"]".repeat(n)}; g();`);
-    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
-    assert.deepEqual(r.program!.body.stmts.map(s => s.kind), ["call"]);
-  });
-  it("keeps the token after a skipped group in a statement body", () => {
-    const r = body(`if (true) ${"{".repeat(n)}${"}".repeat(n)} x = 1;`);
-    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
-    assert.deepEqual(r.program!.body.stmts.map(s => s.kind), ["if", "assign"]);
   });
   it("does not swallow the closing brace after a missing if body", () => {
     const r = parse("m () : proc\n{\n  if (x > 0)\n}\n");

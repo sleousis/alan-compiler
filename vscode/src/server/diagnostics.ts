@@ -4,9 +4,10 @@ import { SourceAnalysis, analyzeSource } from "./analysis";
 
 /**
  * Errors that stay while the file has syntax errors. They come from a
- * declaration alone, so a part the parser dropped cannot cause them.
+ * declaration alone, or from nesting that is there, so a part the parser
+ * dropped cannot cause them.
  */
-const SHOWN_WITH_SYNTAX_ERRORS = new Set<SemanticCode | undefined>(["duplicate", "declaration"]);
+const SHOWN_WITH_SYNTAX_ERRORS = new Set<SemanticCode | undefined>(["nesting", "duplicate", "declaration"]);
 
 /**
  * Diagnostics for a text, or for a text already analysed, in source order.

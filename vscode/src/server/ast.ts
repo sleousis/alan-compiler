@@ -49,7 +49,7 @@ export type Cond =
  * parser errors carry no code.
  */
 export type SemanticCode =
-  | "duplicate" | "declaration" | "unknown-name" | "not-an-array" | "not-a-variable" | "not-a-function"
+  | "nesting" | "duplicate" | "declaration" | "unknown-name" | "not-an-array" | "not-a-variable" | "not-a-function"
   | "argument-count" | "type";
 export interface Diagnostic {
   message: string; range: Range; severity: "error" | "warning"; source: "alan"; code?: SemanticCode;
