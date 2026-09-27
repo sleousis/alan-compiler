@@ -20,12 +20,12 @@ describe("lexer", () => {
     assert.deepEqual(t.range.start, { line: 1, character: 2 });
   });
   it("reads char and string literals with escapes", () => {
-    const k = lex(`'\\n' '\\x4f' "a\\"b"`).tokens.map(t => t.kind);
-    assert.deepEqual(k, ["char","char","string","eof"]);
+    const k = lex(`'\\n' '\\x4f' '\\x4F' "a\\"b\\xAb"`).tokens.map(t => t.kind);
+    assert.deepEqual(k, ["char","char","char","string","eof"]);
   });
   it("reports unterminated comment and illegal phrase", () => {
     assert.match(lex("(* open").errors[0].message, /comment/);
-    assert.match(lex("12abc").errors[0].message, /Illegal phrase/);
+    assert.equal(lex("12abc").errors[0].message, "Illegal phrase!");
   });
 
   it("maps every keyword and leaves longer words as ids", () => {
@@ -59,8 +59,8 @@ describe("lexer", () => {
   });
 
   it("accepts every char literal form from lexer.l", () => {
-    const good = ["'a'", "'Z'", "'7'", "' '", "'!'", "';'", "'('", "'\\n'", "'\\t'", "'\\r'",
-      "'\\0'", "'\\\\'", "'\\''", "'\\\"'", "'\\x0a'", "'\\xff'"];
+    const good = ["'a'", "'Z'", "'7'", "' '", "'!'", "';'", "'('", "'_'", "'.'", "'~'", "'#'", "'\\n'", "'\\t'",
+      "'\\r'", "'\\0'", "'\\\\'", "'\\''", "'\\\"'", "'\\x0a'", "'\\xff'", "'\\xFF'", "'\\xaB'"];
     for (const src of good) {
       const r = lex(src);
       assert.deepEqual(r.tokens.map((t) => t.kind), ["char", "eof"], src);
@@ -70,10 +70,10 @@ describe("lexer", () => {
   });
 
   it("rejects char literals lexer.l does not accept", () => {
-    for (const src of ["'ab'", "'\\xFF'", "'\\q'", "'_'", "'.'", "''"]) {
+    for (const src of ["'ab'", "'\\xG0'", "'\\q'", "'\"'", "'\\'", "'''", "''", "'\t'", "'\u00e9'", "'\\x4'"]) {
       const r = lex(src);
       assert.equal(r.tokens[0].kind, "bad", src);
-      assert.ok(r.errors.length > 0, src);
+      assert.equal(r.errors[0].message, "Invalid character constant", src);
     }
   });
 
@@ -81,13 +81,47 @@ describe("lexer", () => {
     const c = lex("x 'a");
     assert.equal(c.tokens[1].kind, "bad");
     assert.deepEqual(c.errors[0].range.start, { line: 0, character: 2 });
-    assert.match(c.errors[0].message, /Unterminated/);
+    assert.equal(c.errors[0].message, "Invalid character constant");
 
     const s = lex("x \"abc\ny");
     assert.deepEqual(s.tokens.map((t) => t.kind), ["id", "bad", "id", "eof"]);
     assert.equal(s.errors.length, 1);
-    assert.match(s.errors[0].message, /Unterminated string/);
+    assert.equal(s.errors[0].message, "String literal not closed on this line");
     assert.deepEqual(s.errors[0].range.start, { line: 0, character: 2 });
+  });
+
+  it("reports broken strings with the messages of lexer.l", () => {
+    const first = (src: string) => {
+      const e = lex(src).errors[0];
+      return e && [e.message, e.range.start.character, e.range.end.character];
+    };
+    assert.deepEqual(first('x "a\\qb" y'), ["Invalid escape sequence \\q in string literal", 4, 6]);
+    assert.deepEqual(first('x "a\\x4g"'), ["Invalid escape sequence \\x in string literal", 4, 6]);
+    assert.deepEqual(first('x "ab\\'), ["Invalid escape sequence \\ in string literal", 5, 6]);
+    assert.deepEqual(first('x "a\u0000b"'), ["NUL character in string literal", 4, 5]);
+    assert.deepEqual(first('x "abc\ny'), ["String literal not closed on this line", 2, 6]);
+    // lexer.l prefers "not closed" when an escaped quote ends the line.
+    assert.deepEqual(first('x "a\\"\ny'), ["String literal not closed on this line", 2, 6]);
+    for (const good of ['"a\\x4F\\xaB"', '"\\n\\t\\r\\0\\\\\\\'\\""', '"tab\there, \u00e9 and \\x41"']) {
+      const r = lex(good);
+      assert.deepEqual(r.tokens.map((t) => t.kind), ["string", "eof"], good);
+      assert.deepEqual(r.errors, [], good);
+    }
+  });
+
+  it("goes on after a broken string at its closing quote", () => {
+    const r = lex('"a\\qb" x');
+    assert.deepEqual(r.tokens.map((t) => [t.kind, t.text]), [["bad", '"a\\qb"'], ["id", "x"], ["eof", ""]]);
+  });
+
+  it("reports int constants above 2147483647 and keeps them as ints", () => {
+    const r = lex("2147483647 2147483648 99999999999999999999");
+    assert.deepEqual(r.tokens.map((t) => t.kind), ["int", "int", "int", "eof"]);
+    assert.deepEqual(r.errors.map((e) => [e.message, e.range.start.character]), [
+      ["Integer constant 2147483648 is out of range (0 to 2147483647)", 11],
+      ["Integer constant 99999999999999999999 is out of range (0 to 2147483647)", 22],
+    ]);
+    assert.deepEqual(lex("0002147483647").errors, []);
   });
 
   it("keeps string text including quotes and escapes", () => {
@@ -98,14 +132,14 @@ describe("lexer", () => {
   it("turns a digit run followed by a letter into one bad token", () => {
     const r = lex("12abc_3 x");
     assert.deepEqual(r.tokens.map((t) => [t.kind, t.text]), [["bad", "12abc_3"], ["id", "x"], ["eof", ""]]);
-    assert.equal(r.errors[0].message, "Illegal phrase");
+    assert.equal(r.errors[0].message, "Illegal phrase!");
   });
 
   it("reports any other character as illegal", () => {
     const r = lex("a @ _b");
     assert.deepEqual(r.tokens.map((t) => [t.kind, t.text]), [["id", "a"], ["bad", "@"], ["bad", "_"], ["id", "b"], ["eof", ""]]);
     assert.equal(r.errors.length, 2);
-    assert.equal(r.errors[0].message, "Illegal character");
+    assert.equal(r.errors[0].message, "Illegal character or phrase!");
     assert.deepEqual(r.errors[0].range, { start: { line: 0, character: 2 }, end: { line: 0, character: 3 } });
   });
 

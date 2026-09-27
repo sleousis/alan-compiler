@@ -1,5 +1,6 @@
 // Alan lexer for the language server. It mirrors the rules of lexer.l at the
 // repository root so the editor reports what the compiler would report.
+import { MSG } from "./messages";
 
 export type TokenKind =
   | "id" | "int" | "char" | "string"
@@ -25,32 +26,59 @@ const KEYWORDS: Record<string, TokenKind> = {
 const TWO_CHAR_OPS = new Set(["==", "!=", "<=", ">="]);
 // The S class of lexer.l plus "=".
 const ONE_CHAR_OPS = new Set("!|&<>()[]{},:+-*%/;=");
-// Characters a char literal may hold unescaped: L, D, S and space.
-const CHAR_SYMBOLS = "!|&<>()[]{},:+-*%/;";
 const SIMPLE_ESCAPES = "ntr0\\'\"";
+/** The largest int constant: int is 32 bits. */
+const INT_MAX = 2147483647n;
 
 const isLetter = (c: string) => (c >= "a" && c <= "z") || (c >= "A" && c <= "Z");
 const isDigit = (c: string) => c >= "0" && c <= "9";
 const isIdChar = (c: string) => isLetter(c) || isDigit(c) || c === "_";
-const isLowerHex = (c: string) => isDigit(c) || (c >= "a" && c <= "f");
+const isHex = (c: string) => isDigit(c) || (c >= "a" && c <= "f") || (c >= "A" && c <= "F");
 const isWhitespace = (c: string) => c === " " || c === "\t" || c === "\r" || c === "\n";
+/** The C class of lexer.l: printable ASCII except the two quotes and the backslash. */
+const isCommonChar = (c: string) => c >= " " && c <= "~" && c !== "'" && c !== "\"" && c !== "\\";
+
+/** Length of the escape sequence (E in lexer.l) at the backslash src[i], or 0 if there is none. */
+function escapeLength(src: string, i: number): number {
+  const e = src[i + 1];
+  if (e !== undefined && SIMPLE_ESCAPES.includes(e)) return 2;
+  if (e === "x" && isHex(src[i + 2] ?? "") && isHex(src[i + 3] ?? "")) return 4;
+  return 0;
+}
 
 /** Length of a valid char literal starting at src[i] (a quote), or 0 if none. */
 function charLiteralLength(src: string, i: number): number {
   const c = src[i + 1];
   if (c === undefined) return 0;
-  let body: number;
-  if (c === "\\") {
-    const e = src[i + 2];
-    if (e !== undefined && SIMPLE_ESCAPES.includes(e)) body = 2;
-    else if (e === "x" && isLowerHex(src[i + 3] ?? "") && isLowerHex(src[i + 4] ?? "")) body = 4;
-    else return 0;
-  } else if (isLetter(c) || isDigit(c) || c === " " || CHAR_SYMBOLS.includes(c)) {
-    body = 1;
-  } else {
-    return 0;
+  const body = c === "\\" ? escapeLength(src, i + 1) : isCommonChar(c) ? 1 : 0;
+  return body > 0 && src[i + 1 + body] === "'" ? body + 2 : 0;
+}
+
+/**
+ * Reads the string literal at src[i] (a quote) as lexer.l does. Its body
+ * holds escapes and any character but the quote, a backslash, a line break
+ * and NUL. Gives the index just past the closing quote, or the index where
+ * the body stops and the error lexer.l reports there.
+ */
+function readString(src: string, i: number): { end: number } | { stop: number; message: string } {
+  let j = i + 1;
+  for (;;) {
+    const c = src[j];
+    if (c === "\"") return { end: j + 1 };
+    if (c === "\\") {
+      const n = escapeLength(src, j);
+      if (n > 0) { j += n; continue; }
+      // lexer.l names the character after the backslash, unless it is a line break or NUL.
+      // A CRLF line end is a line break too, as the compiler reads text files on Windows.
+      const next = src[j + 1];
+      const lineBreak = next === "\n" || (next === "\r" && src[j + 2] === "\n");
+      const named = next === undefined || lineBreak || next === "\u0000" ? "" : next;
+      return { stop: j, message: MSG.invalidEscape(named) };
+    }
+    if (c === undefined || c === "\n") return { stop: j, message: MSG.stringNotClosed };
+    if (c === "\u0000") return { stop: j, message: MSG.nulInString };
+    j++;
   }
-  return src[i + 1 + body] === "'" ? body + 2 : 0;
 }
 
 export function lex(src: string, options: LexOptions = {}): { tokens: Token[]; errors: LexError[]; comments?: Comment[] } {
@@ -113,7 +141,7 @@ export function lex(src: string, options: LexOptions = {}): { tokens: Token[]; e
     }
     if (depth > 0) {
       errors.push({
-        message: "Unterminated comment",
+        message: MSG.unterminatedComment,
         range: { start, end: { line: start.line, character: start.character + 2 } },
       });
     }
@@ -149,20 +177,31 @@ export function lex(src: string, options: LexOptions = {}): { tokens: Token[]; e
       while (j < src.length && isDigit(src[j])) j++;
       if (j < src.length && isLetter(src[j])) {
         while (j < src.length && isIdChar(src[j])) j++;
-        emitBad(j - i, "Illegal phrase");
+        emitBad(j - i, MSG.illegalPhrase);
       } else {
-        emit("int", j - i);
+        // The token stays an int, so the rest of the statement still parses.
+        const token = emit("int", j - i);
+        if (BigInt(token.text) > INT_MAX) errors.push({ message: MSG.intOutOfRange(token.text), range: token.range });
       }
       continue;
     }
 
-    if (c === '"') {
-      // lexer.l: \"(\\.|[^"\\])*\" but the editor ends a string at the line end.
+    if (c === "\"") {
+      const read = readString(src, i);
+      if ("end" in read) { emit("string", read.end - i); continue; }
+      // A broken string becomes one bad token, up to its closing quote on this line if it has one.
       const end = lineEnd(i);
-      let j = i + 1;
-      while (j < end && src[j] !== '"') j += src[j] === "\\" && j + 1 < end ? 2 : 1;
-      if (j < end) emit("string", j + 1 - i);
-      else emitBad(end - i, "Unterminated string");
+      const close = src.indexOf("\"", read.stop + 1);
+      const tokenEnd = read.message === MSG.stringNotClosed ? end : close >= 0 && close < end ? close + 1 : end;
+      const from = i;
+      const token = emit("bad", tokenEnd - i);
+      // An escape or NUL is marked where it is, on the line where the string starts.
+      const start = token.range.start;
+      const at = { line: start.line, character: start.character + read.stop - from };
+      const width = read.message === MSG.nulInString ? 1 : Math.min(2, tokenEnd - read.stop);
+      const range = read.message === MSG.stringNotClosed
+        ? token.range : { start: at, end: { line: at.line, character: at.character + width } };
+      errors.push({ message: read.message, range });
       continue;
     }
 
@@ -173,8 +212,7 @@ export function lex(src: string, options: LexOptions = {}): { tokens: Token[]; e
       const end = lineEnd(i);
       let j = i + 1;
       while (j < end && src[j] !== "'") j += src[j] === "\\" && j + 1 < end ? 2 : 1;
-      if (j < end) emitBad(j + 1 - i, "Illegal character literal");
-      else emitBad(end - i, "Unterminated character literal");
+      emitBad((j < end ? j + 1 : end) - i, MSG.invalidChar);
       continue;
     }
 
@@ -185,7 +223,7 @@ export function lex(src: string, options: LexOptions = {}): { tokens: Token[]; e
     // A surrogate pair is one character to the user.
     const code = src.charCodeAt(i);
     const width = code >= 0xd800 && code <= 0xdbff && i + 1 < src.length ? 2 : 1;
-    emitBad(width, "Illegal character");
+    emitBad(width, MSG.illegalCharacter);
   }
 
   const end = pos();

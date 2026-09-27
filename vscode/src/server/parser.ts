@@ -11,8 +11,14 @@ class ParseError {}
 
 type RelOp = Extract<Cond, { kind: "compare" }>["op"];
 
-/** Deepest nesting of blocks, statements, parentheses and functions the parser follows. */
-const MAX_DEPTH = 500;
+/**
+ * Deepest nesting of blocks, statements, parentheses and functions the parser
+ * follows. The compiler takes nesting far deeper, and its tests nest 2000
+ * statements. The parser and the checks recurse once per level, so the
+ * server runs with a 4 MB stack (SERVER_STACK_KB in extension.ts), which
+ * holds about 5000 levels.
+ */
+const MAX_DEPTH = 3000;
 const TOO_DEEP = "Nesting is too deep";
 
 const CLOSERS: Partial<Record<TokenKind, TokenKind>> = { "(": ")", "[": "]", "{": "}" };
@@ -33,6 +39,13 @@ class Parser {
   private depth = 0;
   /** Start positions that already carry a diagnostic. */
   private readonly reported: Set<string>;
+  /**
+   * Expressions after which bison holds a lookahead token, see ast.ts. A
+   * name needs one to tell it from an indexed name or a call, and + and -
+   * need one to see whether a *, / or % binds first. The other rules end on
+   * a token of their own or pass on what their last part left.
+   */
+  private readonly lookahead = new WeakSet<Expr>();
 
   constructor(private readonly tokens: Token[], readonly diagnostics: Diagnostic[]) {
     this.reported = new Set(diagnostics.map((d) => posKey(d.range.start)));
@@ -61,6 +74,11 @@ class Parser {
   /** The last consumed token, or the first token when nothing is consumed yet. */
   private prev(): Token {
     return this.tokens[Math.max(this.pos - 1, 0)];
+  }
+
+  /** The token whose line the compiler gives a node that ends here, with or without a lookahead. */
+  private lineToken(lookahead: boolean): Range {
+    return (lookahead ? this.peek() : this.prev()).range;
   }
 
   /** Range from the start of `first` to the end of the last consumed token. */
@@ -218,6 +236,7 @@ class Parser {
     const nameTok = this.next();
     const params: Param[] = [];
     let ret: DataType | "proc" = "proc";
+    let at = nameTok.range;
     const headerStart = this.pos;
     try {
       this.expect("(");
@@ -229,6 +248,7 @@ class Parser {
       this.expect(":");
       if (this.eat("kw_proc")) ret = "proc";
       else ret = this.dataType("'int', 'byte' or 'proc'");
+      at = this.prev().range;
     } catch (e) {
       if (!(e instanceof ParseError)) throw e;
       this.syncDecl(headerStart);
@@ -256,7 +276,7 @@ class Parser {
     }
     return {
       kind: "func", name: nameTok.text, nameRange: nameTok.range, params, ret, locals, body,
-      range: this.span(nameTok),
+      range: this.span(nameTok), at,
     };
   }
 
@@ -268,9 +288,11 @@ class Parser {
     const typeStart = this.peek();
     const base = this.dataType("'int' or 'byte'");
     let array = false;
-    if (this.eat("[")) { this.expect("]"); array = true; }
+    // Bison reads the token after the type to see whether "[" follows.
+    let at = this.peek().range;
+    if (this.eat("[")) { this.expect("]"); array = true; at = this.prev().range; }
     const type: TypeRef = { base, array, range: this.span(typeStart) };
-    return { name: nameTok.text, nameRange: nameTok.range, byRef, type };
+    return { name: nameTok.text, nameRange: nameTok.range, byRef, type, at };
   }
 
   /** varDef = id ":" dataType ["[" int "]"] ";" */
@@ -284,7 +306,9 @@ class Parser {
       this.expect("]");
     }
     this.expectSemicolon();
-    const decl: VarDecl = { kind: "var", name: nameTok.text, nameRange: nameTok.range, type, range: this.span(nameTok) };
+    const decl: VarDecl = {
+      kind: "var", name: nameTok.text, nameRange: nameTok.range, type, range: this.span(nameTok), at: this.prev().range,
+    };
     if (size !== undefined) decl.size = size;
     return decl;
   }
@@ -369,7 +393,8 @@ class Parser {
         this.next();
         const value = this.atExprStart() ? this.expr() : undefined;
         this.expectSemicolon();
-        return value ? { kind: "return", value, range: this.span(first) } : { kind: "return", range: this.span(first) };
+        const at = this.prev().range;
+        return value ? { kind: "return", value, range: this.span(first), at } : { kind: "return", range: this.span(first), at };
       }
       case "id":
         if (this.peek(1).kind === "(") {
@@ -392,7 +417,7 @@ class Parser {
     this.expect("=", target.kind === "name" ? "'=', '[' or '('" : "'='");
     const value = this.expr();
     this.expectSemicolon();
-    return { kind: "assign", target, value, range: this.span(first) };
+    return { kind: "assign", target, value, range: this.span(first), at: this.prev().range };
   }
 
   /** lvalue = id ["[" expr "]"] | string */
@@ -406,9 +431,11 @@ class Parser {
         this.expect("]");
         return inner;
       });
-      return { kind: "index", name: t.text, nameRange: t.range, index, range: this.span(t) };
+      return { kind: "index", name: t.text, nameRange: t.range, index, range: this.span(t), at: this.prev().range };
     }
-    return { kind: "name", name: t.text, range: t.range };
+    const name: LValue = { kind: "name", name: t.text, range: t.range, at: this.peek().range };
+    this.lookahead.add(name);
+    return name;
   }
 
   /** id "(" [expr {"," expr}] ")" */
@@ -424,7 +451,7 @@ class Parser {
       this.expect(")", "',' or ')'");
       return list;
     });
-    return { kind: "call", name: nameTok.text, nameRange: nameTok.range, args, range: this.span(nameTok) };
+    return { kind: "call", name: nameTok.text, nameRange: nameTok.range, args, range: this.span(nameTok), at: this.prev().range };
   }
 
   // ---- expressions --------------------------------------------------------
@@ -441,7 +468,8 @@ class Parser {
     while (this.at("+") || this.at("-")) {
       const op = this.next().kind as "+" | "-";
       const right = this.term();
-      left = { kind: "binary", op, left, right, range: this.span(first) };
+      left = { kind: "binary", op, left, right, range: this.span(first), at: this.lineToken(true) };
+      this.lookahead.add(left);
     }
     return left;
   }
@@ -453,7 +481,9 @@ class Parser {
     while (this.at("*") || this.at("/") || this.at("%")) {
       const op = this.next().kind as "*" | "/" | "%";
       const right = this.unary();
-      left = { kind: "binary", op, left, right, range: this.span(first) };
+      const held = this.lookahead.has(right);
+      left = { kind: "binary", op, left, right, range: this.span(first), at: this.lineToken(held) };
+      if (held) this.lookahead.add(left);
     }
     return left;
   }
@@ -464,7 +494,10 @@ class Parser {
     if (first.kind === "+" || first.kind === "-") {
       this.next();
       const operand = this.nested(() => this.unary());
-      return { kind: "unary", op: first.kind, operand, range: this.span(first) };
+      const held = this.lookahead.has(operand);
+      const node: Expr = { kind: "unary", op: first.kind, operand, range: this.span(first), at: this.lineToken(held) };
+      if (held) this.lookahead.add(node);
+      return node;
     }
     return this.primary();
   }
@@ -484,6 +517,8 @@ class Parser {
           this.next();
           const inner = this.expr();
           this.expect(")");
+          // The ")" is read, so nothing is held after the parentheses.
+          this.lookahead.delete(inner);
           return inner;
         });
       case "id":
@@ -560,7 +595,7 @@ class Parser {
     if (!REL_OPS.has(opTok.kind)) this.fail("a comparison operator");
     this.next();
     const right = this.expr();
-    return { kind: "compare", op: opTok.kind as RelOp, left, right, range: this.span(first) };
+    return { kind: "compare", op: opTok.kind as RelOp, left, right, range: this.span(first), at: this.lineToken(true) };
   }
 
   /**

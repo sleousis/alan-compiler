@@ -1,6 +1,7 @@
 import { strict as assert } from "assert";
 import {
-  analyzeSource, completions, computeDiagnostics, definition, documentSymbols, hover, mergeDiagnostics, signatureHelp,
+  analyzeSource, completions, computeDiagnostics, definition, documentSymbols, firstError, hover, mergeDiagnostics,
+  references, signatureHelp,
 } from "../../src/server/features";
 
 const src = "m () : proc\n total : int;\n add (a : int, b : int) : int\n { return a + b; }\n{\n  total = add(1, 2);\n  \n}";
@@ -30,30 +31,41 @@ describe("features", () => {
 describe("diagnostics", () => {
   const messages = (s: string) => computeDiagnostics(s).map(d => d.message);
 
-  it("reports name errors once the syntax is clean", () => {
+  it("reports the compiler's errors once the syntax is clean", () => {
     const m = messages("m () : proc\n f (a : int) : proc\n {}\n z : int;\n{ y = 1; f(); z = f; }");
     assert.deepEqual(m, [
-      "Unknown name 'y'",
-      "'f' expects 1 argument but got 0",
-      "'f' is a function, not a variable",
+      "Identifier y not found.",
+      "Function f must have Parameters.",
+      "f is a function, so it needs arguments in parentheses.",
     ]);
   });
-  it("keeps syntax and duplicate errors but hides the other name errors while the syntax is broken", () => {
-    const m = messages("m () : proc\n x : int;\n x : byte;\n f (a : int) : proc\n {}\n{ y = 1; f(); z = f; x = ; }");
-    assert.ok(m.some(x => /already declared/.test(x)), "duplicate");
+  it("keeps syntax errors and errors of declarations but hides the others while the syntax is broken", () => {
+    const m = messages("m () : proc\n x : int;\n x : byte;\n a : int[0];\n f (a : int) : proc\n {}\n{ y = 1; f(); z = f; x = 'a'; x = ; }");
+    assert.ok(m.includes("Duplicate identifier: x"), "duplicate");
+    assert.ok(m.includes("Array size must be a positive int."), "declaration");
     assert.ok(m.some(x => /expected an expression/.test(x)), "syntax");
-    assert.ok(!m.some(x => /Unknown name|expects|is a function/.test(x)), m.join("\n"));
+    assert.ok(!m.some(x => /not found|Parameters|is a function|assign/.test(x)), m.join("\n"));
   });
-  it("gives each name error a code", () => {
-    const d = computeDiagnostics("m () : proc\n x : int;\n x : int;\n f (a : int) : proc\n {}\n{ y = 1; f(); x = f; x[0] = 1; x(); }");
-    assert.deepEqual(d.map(x => x.code), ["duplicate", "unknown-name", "argument-count", "not-a-variable", "not-an-array", "not-a-function"]);
+  it("gives each semantic error a code", () => {
+    const d = computeDiagnostics("m () : proc\n x : int;\n x : int;\n f (a : int) : proc\n {}\n{ y = 1; f(); x = f; x[0] = 1; x(); x = 'a'; }");
+    assert.deepEqual(d.map(x => x.code),
+      ["duplicate", "unknown-name", "argument-count", "not-a-variable", "not-an-array", "not-a-function", "type"]);
+    assert.deepEqual(computeDiagnostics("m (n : int) : proc\n{ }").map(x => x.code), ["declaration"]);
+  });
+  it("finds the error the compiler reports first", () => {
+    assert.equal(firstError("m () : proc\n{ y = 1; }")!.message, "Identifier y not found.");
+    // The compiler meets the call before the duplicate that comes earlier in the text.
+    assert.equal(firstError("m () : proc\n f () : proc { g(); }\n x : int;\n x : int;\n{ }")!.message,
+      "Function g is not declared in this Scope.");
+    assert.equal(firstError("m () : proc\n{ y = 1; x = 'ab'; }")!.message, "Invalid character constant");
+    assert.equal(firstError("m () : proc\n{ }"), undefined);
   });
   it("accepts a text already analysed", () => {
     const text = "m () : proc\n{ y = 1; }";
     assert.deepEqual(computeDiagnostics(analyzeSource(text)), computeDiagnostics(text));
   });
   it("reports lexer errors", () => {
-    assert.ok(messages("m () : proc\n{ writeChar('ab'); }").includes("Illegal character literal"));
+    assert.ok(messages("m () : proc\n{ writeChar('ab'); }").includes("Invalid character constant"));
   });
   it("returns nothing for a clean file", () => {
     assert.deepEqual(computeDiagnostics(src), []);
@@ -163,6 +175,50 @@ describe("signature help", () => {
   it("gives nothing outside a call", () => {
     assert.equal(signatureHelp(src, { line: 5, character: 20 }), undefined);
     assert.equal(signatureHelp(src, { line: 6, character: 2 }), undefined);
+  });
+});
+
+describe("Pascal scoping in the editor", () => {
+  const nested = [
+    "m () : proc",            // 0
+    " x : int;",              // 1
+    " f (f : int) : int",     // 2
+    " { return f + x; }",     // 3
+    " g () : proc",           // 4
+    "  x : byte;",            // 5
+    "  m () : proc { }",      // 6
+    " { x = 'a'; m(); }",     // 7
+    " y : int;",              // 8
+    "{ x = f(1); g(); }",     // 9
+  ].join("\n");
+
+  it("completes a parameter that shares its function's name as the parameter", () => {
+    const f = completions(nested, { line: 3, character: 10 }).filter(c => c.label === "f");
+    assert.deepEqual(f.map(c => [c.kind, c.detail]), [["parameter", "f : int"]]);
+  });
+  it("completes the innermost of shadowing names and only names declared before", () => {
+    const items = completions(nested, { line: 7, character: 3 });
+    assert.equal(items.find(c => c.label === "x")!.detail, "x : byte");
+    assert.equal(items.find(c => c.label === "m")!.detail, "m () : proc");
+    assert.equal(items.filter(c => c.label === "m").length, 1);
+    assert.ok(items.some(c => c.label === "f") && !items.some(c => c.label === "y"));
+  });
+  it("hovers and goes to the declaration that a shadowing name finds", () => {
+    assert.match(hover(nested, { line: 7, character: 3 })!, /x : byte/);
+    assert.deepEqual(definition(nested, { line: 7, character: 3 })!.start, { line: 5, character: 2 });
+    assert.deepEqual(definition(nested, { line: 7, character: 12 })!.start, { line: 6, character: 2 });
+    assert.deepEqual(definition(nested, { line: 3, character: 10 })!.start, { line: 2, character: 4 });
+    assert.deepEqual(definition(nested, { line: 9, character: 6 })!.start, { line: 2, character: 1 });
+  });
+  it("keeps the uses of a shadowed name apart", () => {
+    const outer = references(nested, { line: 1, character: 1 }, true).map(r => r.start);
+    assert.deepEqual(outer, [{ line: 1, character: 1 }, { line: 3, character: 14 }, { line: 9, character: 2 }]);
+  });
+  it("gives a call the library function when the user function comes later", () => {
+    const src = "m () : proc\n g () : proc { writeInteger(1); }\n writeInteger (a : int, b : int) : proc { }\n{ writeInteger(1, 2); }";
+    assert.match(hover(src, { line: 1, character: 16 })!, /Prints an integer/);
+    assert.deepEqual(definition(src, { line: 3, character: 3 })!.start, { line: 2, character: 1 });
+    assert.equal(signatureHelp(src, { line: 1, character: 28 })!.label, "writeInteger (n : int) : proc");
   });
 });
 

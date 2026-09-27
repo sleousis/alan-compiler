@@ -83,7 +83,7 @@ describe("parser", () => {
   });
   it("includes lexer errors once and goes on after a bad token", () => {
     const r = body("x = 'ab'; x = ;");
-    assert.deepEqual(r.diagnostics.map(d => d.message), ["Illegal character literal", "expected an expression but found ';'"]);
+    assert.deepEqual(r.diagnostics.map(d => d.message), ["Invalid character constant", "expected an expression but found ';'"]);
   });
   it("reports a missing closing brace at the end of the file", () => {
     const r = parse("m () : proc\n{ x = 1;");
@@ -131,8 +131,8 @@ describe("parser", () => {
   it("stops at deeply nested function definitions", () => {
     const r = parse(`${"f () : proc\n".repeat(n)}${"{ }\n".repeat(n)}`);
     assert.deepEqual(r.diagnostics.map(d => [d.range.start, d.message]), [
-      [{ line: 501, character: 0 }, "Nesting is too deep"],
-      [{ line: 10501, character: 0 }, "expected end of file but found '{'"],
+      [{ line: 3001, character: 0 }, "Nesting is too deep"],
+      [{ line: 13001, character: 0 }, "expected end of file but found '{'"],
     ]);
   });
   it("stops at deeply nested call arguments and keeps the next statement", () => {

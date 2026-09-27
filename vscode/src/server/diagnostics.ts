@@ -1,20 +1,35 @@
-// Live diagnostics: lexer and parser errors plus the name checks of scopes.ts.
-import { Diagnostic } from "./ast";
+// Live diagnostics: lexer and parser errors plus the checks of scopes.ts.
+import { Diagnostic, SemanticCode } from "./ast";
 import { SourceAnalysis, analyzeSource } from "./analysis";
 
 /**
- * Diagnostics for a text, or for a text already analysed. While the file has
- * syntax errors the partial tree makes most name errors unreliable (a broken
- * declaration looks like an unknown name), so only duplicate declarations
- * are shown then.
+ * Errors that stay while the file has syntax errors. They come from a
+ * declaration alone, so a part the parser dropped cannot cause them.
+ */
+const SHOWN_WITH_SYNTAX_ERRORS = new Set<SemanticCode | undefined>(["duplicate", "declaration"]);
+
+/**
+ * Diagnostics for a text, or for a text already analysed, in source order.
+ * While the file has syntax errors the partial tree makes most other errors
+ * unreliable (a broken declaration looks like an unknown name), so only
+ * errors of declarations are shown then.
  */
 export function computeDiagnostics(source: string | SourceAnalysis): Diagnostic[] {
   const { syntax, analysis, clean } = typeof source === "string" ? analyzeSource(source) : source;
-  const names = analysis?.diagnostics ?? [];
-  const shown = clean ? names : names.filter((d) => d.code === "duplicate");
+  const semantic = analysis?.diagnostics ?? [];
+  const shown = clean ? semantic : semantic.filter((d) => SHOWN_WITH_SYNTAX_ERRORS.has(d.code));
   return [...syntax, ...shown].sort(
     (a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character,
   );
+}
+
+/**
+ * The error `alanc check` would report first: the first lexer or parser
+ * error in the file, or else the first error the checks meet.
+ */
+export function firstError(source: string | SourceAnalysis): Diagnostic | undefined {
+  const { syntax, analysis } = typeof source === "string" ? analyzeSource(source) : source;
+  return syntax[0] ?? analysis?.diagnostics[0];
 }
 
 /**

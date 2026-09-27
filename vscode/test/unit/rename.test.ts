@@ -102,15 +102,21 @@ describe("rename", () => {
     const s = ["m () : proc", " x : int;", " g () : proc", "  y : int;", " { y = 1; x = 2; }", "{ x = 3; }"].join("\n");
     assert.equal((rename(s, { line: 1, character: 1 }, "y") as any).error, "'y' would clash with the declaration at line 4.");
   });
-  it("refuses a parameter named like its function", () => {
+  it("renames a parameter to its function's name and back, since they are in different scopes", () => {
     const s = "m () : proc\n g (a : int) : proc { a = 1; }\n{ g(1); }";
-    assert.match((rename(s, { line: 1, character: 4 }, "g") as any).error, /clash/);
-    assert.match((rename(s, { line: 1, character: 1 }, "a") as any).error, /clash/);
+    assert.equal(edited(s, { line: 1, character: 4 }, "g"), "m () : proc\n g (g : int) : proc { g = 1; }\n{ g(1); }");
+    assert.equal(edited(s, { line: 1, character: 1 }, "a"), "m () : proc\n a (a : int) : proc { a = 1; }\n{ a(1); }");
   });
-  it("refuses a nested function named like a name of an enclosing function", () => {
+  it("refuses a nested function named like a name in the same scope", () => {
     const s = "m () : proc\n z : int;\n g () : proc { }\n{ z = 1; g(); }";
-    assert.match((rename(s, { line: 2, character: 1 }, "z") as any).error, /clash/);
-    assert.match((rename(s, { line: 2, character: 1 }, "m") as any).error, /clash/);
+    assert.equal((rename(s, { line: 2, character: 1 }, "z") as any).error, "'z' would clash with the declaration at line 2.");
+  });
+  it("renames a nested function to its parent's name, which it then hides", () => {
+    const s = "m () : proc\n g () : proc { }\n{ g(); }";
+    assert.equal(edited(s, { line: 1, character: 1 }, "m"), "m () : proc\n m () : proc { }\n{ m(); }");
+    // A call of the parent in a later function would find the renamed one instead.
+    const r = "m () : proc\n g () : proc { }\n h () : proc { m(); }\n{ g(); }";
+    assert.match((rename(r, { line: 1, character: 1 }, "m") as any).error, /clash/);
   });
   it("renames a user function to a library name when the compiler accepts it", () => {
     const s = "m () : proc\n g (a : int) : proc { }\n{ g(1); }";
@@ -163,8 +169,8 @@ describe("rename", () => {
     assert.ok("edits" in r && r.edits.length === 30001);
     const accepted = fastest("total");
     assert.ok(accepted < 1000, `took ${accepted.toFixed(1)} ms`);
-    assert.ok("error" in rename(big, { line: 1, character: 1 }, "m"));
-    const refused = fastest("m");
+    assert.ok("error" in rename(big, { line: 1, character: 1 }, "y"));
+    const refused = fastest("y");
     assert.ok(refused < 1000, `took ${refused.toFixed(1)} ms`);
   });
   it("returns no edits for the same name", () => {

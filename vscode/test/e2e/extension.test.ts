@@ -6,6 +6,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 const examples = path.resolve(__dirname, "../../../Examples");
+const longBlocks = path.resolve(__dirname, "../../../tests/regress/long_blocks.alan");
 const bubbleSort = path.join(examples, "BubbleSort.alan");
 
 /** Calls `probe` until it returns a value, or fails after `ms`. */
@@ -105,6 +106,29 @@ describe("Alan extension", function () {
       return diags.length ? diags : undefined;
     });
     assert.ok(Date.now() - typed <= 2_000);
+  });
+
+  it("reports the compiler's message on the compiler's line", async () => {
+    const copy = await scratch("main () : proc\n  p () : proc { }\n{\n  if (p() == p()) ;\n}\n");
+    const diags = await eventually("a diagnostic", 10_000, async () => {
+      const d = vscode.languages.getDiagnostics(copy.uri);
+      return d.length ? d : undefined;
+    });
+    assert.deepEqual(diags.map((d) => [d.range.start.line, d.message]),
+      [[3, "type mismatch in == operator (operands must be int or byte, not proc)."]]);
+  });
+
+  it("follows 2000 nested statements, as the compiler does", async function () {
+    this.timeout(30_000);
+    // An unknown name after the nesting shows that the server got through it.
+    const text = fs.readFileSync(longBlocks, "utf8").replace(/\r\n/g, "\n").replace(/\}\s*$/, "  y = 1;\n}\n");
+    const copy = await scratch(text);
+    const diags = await eventually("a diagnostic", 20_000, async () => {
+      const d = vscode.languages.getDiagnostics(copy.uri);
+      return d.length ? d : undefined;
+    });
+    const last = text.split("\n").length - 3;
+    assert.deepEqual(diags.map((d) => [d.range.start.line, d.message]), [[last, "Identifier y not found."]]);
   });
 
   it("formats a messy program like the formatter's unit test", async () => {

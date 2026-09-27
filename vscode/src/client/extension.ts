@@ -14,12 +14,20 @@ import { installedCompilerPath, MIN_COMPILER } from "./installer";
 let client: LanguageClient | undefined;
 let started: Promise<void> | undefined;
 
+/**
+ * Stack for the language server, in KB. The default of about 1 MB holds
+ * fewer than 2000 nested statements, and the compiler's tests nest 2000.
+ * The server runs on the main thread of VS Code's Node, which has 8 MB.
+ */
+const SERVER_STACK_KB = 4000;
+
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Alan", { log: true });
   const module = context.asAbsolutePath(path.join("dist", "server.js"));
+  const stack = `--stack-size=${SERVER_STACK_KB}`;
   const serverOptions: ServerOptions = {
-    run: { module, transport: TransportKind.ipc },
-    debug: { module, transport: TransportKind.ipc, options: { execArgv: ["--nolazy", "--inspect=6009"] } },
+    run: { module, transport: TransportKind.ipc, options: { execArgv: [stack] } },
+    debug: { module, transport: TransportKind.ipc, options: { execArgv: [stack, "--nolazy", "--inspect=6009"] } },
   };
   const clientOptions: LanguageClientOptions = { documentSelector: [{ language: "alan" }], outputChannel: output };
   const lc = new LanguageClient("alan", "Alan", serverOptions, clientOptions);

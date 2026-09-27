@@ -12,7 +12,7 @@ const commentsCase = path.resolve(__dirname, "../../../tests/comments/comments.a
 function shape(src: string): unknown {
   const r = parse(src);
   assert.equal(r.diagnostics.length, 0);
-  return JSON.parse(JSON.stringify(r.program, (k, v) => (k === "range" || k === "nameRange" ? undefined : v)));
+  return JSON.parse(JSON.stringify(r.program, (k, v) => (k === "range" || k === "nameRange" || k === "at" ? undefined : v)));
 }
 
 const fmt = (lines: string[]) => formatDocument(lines.join("\n"), opts);
