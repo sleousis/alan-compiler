@@ -4,12 +4,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -67,8 +69,9 @@ static std::string self_dir(const char *argv0) {
    from the directory that holds alanc. */
 static std::string find_tool(const char *env, const std::string &rel,
                              const char *argv0) {
-  if (const char *e = std::getenv(env))
-    if (*e) return e;
+  /* GetEnv reads the variable as UTF-8, also on Windows. */
+  if (std::optional<std::string> e = llvm::sys::Process::GetEnv(env))
+    if (!e->empty()) return *e;
   llvm::SmallString<256> p(self_dir(argv0));
   llvm::sys::path::append(p, rel);
   return std::string(p);

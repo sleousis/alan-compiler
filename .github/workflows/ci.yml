@@ -210,6 +210,58 @@ jobs:
           $pdb = @(Get-ChildItem -Path $env:TEMP -Filter 'alan*.pdb')
           if ($pdb.Count -ne 0) { $pdb.FullName; exit 1 }
 
+      # Windows gives main() its arguments in the ANSI code page. A source in
+      # a folder with Greek letters and a space must still compile, build and
+      # run, also when TEMP and TMP hold Greek letters. An error names the
+      # file by its base name.
+      - name: Test non-ASCII paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $alanc = (Resolve-Path "dist/${{ matrix.platform }}/bin/alanc.exe").Path
+          $env:ALAN_RUNTIME = (Resolve-Path "dist/${{ matrix.platform }}/lib/libalanrt.a").Path
+          $dir = Join-Path $env:RUNNER_TEMP 'Σάββας dir'
+          $tmp = Join-Path $env:RUNNER_TEMP 'Προσωρινά αρχεία'
+          New-Item -ItemType Directory -Force $dir, $tmp | Out-Null
+          $src = Join-Path $dir 'Γειά σου.alan'
+          Copy-Item Examples/HelloWorld.alan $src
+          $want = [IO.File]::ReadAllText("$PWD\tests\expected\HelloWorld.txt")
+          function Assert-Hello($what, $out) {
+            if ($LASTEXITCODE -ne 0) { throw "$what failed with exit code $LASTEXITCODE" }
+            $got = ($out | Out-String) -replace "`r", ''
+            if ($got -ne $want) { throw "$what printed: $got" }
+          }
+          foreach ($greekTemp in $false, $true) {
+            if ($greekTemp) { $env:TEMP = $tmp; $env:TMP = $tmp }
+            Write-Host "TEMP=$env:TEMP"
+            & $alanc check $src
+            if ($LASTEXITCODE -ne 0) { throw "check failed with exit code $LASTEXITCODE" }
+            Assert-Hello 'run' (& $alanc run $src)
+            $exe = Join-Path $dir 'Γειά σου.exe'
+            Remove-Item $exe -ErrorAction SilentlyContinue
+            & $alanc build $src
+            if ($LASTEXITCODE -ne 0) { throw "build failed with exit code $LASTEXITCODE" }
+            Assert-Hello 'build' (& $exe)
+            $dbg = Join-Path $dir 'Γειά debug.exe'
+            & $alanc build -g $src -o $dbg
+            if ($LASTEXITCODE -ne 0) { throw "build -g failed with exit code $LASTEXITCODE" }
+            Assert-Hello 'build -g' (& $dbg)
+            if (Test-Path (Join-Path $dir 'Γειά debug.pdb')) { throw 'build -g left a .pdb behind' }
+          }
+          $bad = Join-Path $dir 'Σφάλμα.alan'
+          Copy-Item tests/errors/undeclared.alan $bad
+          # Python reads stderr as bytes, whatever the console code page is.
+          $check = @'
+          import os, re, subprocess, sys
+          r = subprocess.run([sys.argv[1], 'check', sys.argv[2]], capture_output=True)
+          err = r.stderr.decode('utf-8')
+          name = re.escape(os.path.basename(sys.argv[2]))
+          if r.returncode != 1 or not re.match(name + r':3: error: ', err):
+              sys.exit('exit %d, stderr: %r' % (r.returncode, err))
+          '@
+          & $env:PYTHON -c $check $alanc $bad
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       # The LLVM package for Windows has no LLDB, so take it from the
       # installer and keep only the files LLDB needs.
       - name: Cache LLDB (Windows)

@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
+#include <vector>
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Path.h"
 #include "ast.hpp"
 #include "symbol.hpp"
@@ -207,13 +211,26 @@ void yyerror (const char msg[]) {
   exit(1);
 }
 
+/* Opens the UTF-8 path for reading. On Windows fopen takes the ANSI code
+   page, which cannot hold every file name, so the path goes to _wfopen. */
+static FILE *open_source(const char *path) {
+#ifdef _WIN32
+  llvm::SmallVector<llvm::UTF16, 256> wide;
+  if (!llvm::convertUTF8ToUTF16String(path, wide)) return NULL;
+  wide.push_back(0);
+  return _wfopen(reinterpret_cast<const wchar_t *>(wide.data()), L"r");
+#else
+  return fopen(path, "r");
+#endif
+}
+
 /* Parse the file at path and check it. When codegen is true, also generate
    the LLVM module that alan_module() returns. Returns 0 on success. Errors
    in the program are reported on stderr and end the process with exit
    code 1. When debug is true, the module carries DWARF debug information. */
 int compile_to_module(const char *path, bool optimize, bool codegen, bool debug) {
   opt = optimize;
-  yyin = fopen(path, "r");
+  yyin = open_source(path);
   if (yyin == NULL) {
     fprintf(stderr, "alanc: %serror:%s cannot open %s\n",
             stderr_is_tty() ? "\033[1;31m" : "",
@@ -231,6 +248,26 @@ int compile_to_module(const char *path, bool optimize, bool codegen, bool debug)
   return 0;
 }
 
+#ifdef _WIN32
+/* main() would get its arguments in the ANSI code page, which cannot hold
+   every file name. wmain gets them in UTF-16, and alanc passes UTF-8 paths
+   to LLVM, which opens files and runs programs with UTF-16 names. */
+int wmain(int argc, wchar_t *wargv[]) {
+  std::vector<std::string> args(argc);
+  std::vector<char *> argv(argc + 1, nullptr);
+  for (int i = 0; i < argc; i++) {
+    if (!llvm::convertWideToUTF8(wargv[i], args[i])) {
+      fprintf(stderr, "alanc: %serror:%s an argument is not valid Unicode\n",
+              stderr_is_tty() ? "\033[1;31m" : "",
+              stderr_is_tty() ? "\033[0m" : "");
+      return 2;
+    }
+    argv[i] = &args[i][0];
+  }
+  return alan_cli_main(argc, argv.data());
+}
+#else
 int main(int argc, char *argv[]) {
   return alan_cli_main(argc, argv);
 }
+#endif
