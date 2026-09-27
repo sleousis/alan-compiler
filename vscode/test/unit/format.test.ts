@@ -157,6 +157,80 @@ describe("formatter", () => {
     assert.equal(formatDocument(once, opts), once);
   });
 
+  it("keeps a body brace at its statement's depth when a comment pushes it down", () => {
+    const src = [
+      "main () : proc x : int; {",
+      "if (x == 1) -- after if",
+      "{ x = 2; }",
+      "else -- after else",
+      "{ x = 0; }",
+      "while (x < 3) -- after while",
+      "{ x = x + 1; }",
+      "if (x == 1) x = 1; else -- before else if",
+      "if (x == 2) x = 2;",
+      "}",
+    ].join("\n");
+    const once = formatDocument(src, opts)!;
+    assert.equal(once, [
+      "main () : proc",
+      "    x : int;",
+      "{",
+      "    if (x == 1) -- after if",
+      "    {",
+      "        x = 2;",
+      "    }",
+      "    else -- after else",
+      "    {",
+      "        x = 0;",
+      "    }",
+      "    while (x < 3) -- after while",
+      "    {",
+      "        x = x + 1;",
+      "    }",
+      "    if (x == 1)",
+      "        x = 1;",
+      "    else -- before else if",
+      "    if (x == 2)",
+      "        x = 2;",
+      "}", ""].join("\n"));
+    assert.equal(formatDocument(once, opts), once);
+  });
+
+  it("keeps a closing brace on its own line after a block comment", () => {
+    const once = formatDocument("main () : proc\n{\n  x = 1;\n(* c *) }\n", opts)!;
+    assert.equal(once, "main () : proc\n{\n    x = 1;\n    (* c *)\n}\n");
+    assert.equal(formatDocument(once, opts), once);
+  });
+
+  it("gives a comment before a function body the header's indent", () => {
+    const src = "main () : proc\n f () : proc\n  x : int;\n-- f body\n { x = 1; }\n  -- main body\n{ f(); }\n";
+    assert.equal(formatDocument(src, opts), [
+      "main () : proc",
+      "    f () : proc",
+      "        x : int;",
+      "    -- f body",
+      "    {",
+      "        x = 1;",
+      "    }",
+      "-- main body",
+      "{",
+      "    f();",
+      "}", ""].join("\n"));
+  });
+
+  it("formats a 5,000 line file full of comments quickly", () => {
+    const lines = ["main () : proc", "x : int;", "{"];
+    for (let i = 0; i < 2500; i++) lines.push(`-- step ${i}`, `x = x + ${i}; (* ${i} *)`);
+    lines.push("}");
+    const src = lines.join("\n");
+    formatDocument(src, opts);   // warm up
+    const t0 = process.hrtime.bigint();
+    const out = formatDocument(src, opts);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(out);
+    assert.ok(ms < 100, `took ${ms.toFixed(1)} ms`);
+  });
+
   it("copies block comments over lines and re-indents the first line", () => {
     const src = "main () : proc\n{\n        (* a\n   b *)\n  x = 1;\n}\n";
     assert.equal(formatDocument(src, opts), "main () : proc\n{\n    (* a\n   b *)\n    x = 1;\n}\n");

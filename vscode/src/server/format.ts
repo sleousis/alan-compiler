@@ -32,11 +32,23 @@ const commentText = (c: Comment) => (c.block ? c.text : c.text.trimEnd());
 
 const splitLines = (text: string) => text.split(/\r?\n/);
 
+interface LineStarts {
+  /** First tokens of lines, with their indent depth. */
+  indent: Map<number, number>;
+  /**
+   * Tokens that continue the line of an if, else or while (a body "{", the
+   * "if" of "else if"), with the depth they take when a comment pushes them
+   * onto a line of their own.
+   */
+  joined: Map<number, number>;
+  headerNames: Set<number>;
+}
+
 /**
  * Finds the first token of every line and its indent depth, by walking the
  * tree. Tokens that are not in the map continue the line before them.
  */
-function lineStarts(program: FuncDecl, tokens: Token[]): { indent: Map<number, number>; headerNames: Set<number> } {
+function lineStarts(program: FuncDecl, tokens: Token[]): LineStarts {
   const byStart = new Map<string, number>();
   const byEnd = new Map<string, number>();
   tokens.forEach((t, i) => { byStart.set(posKey(t.range.start), i); byEnd.set(posKey(t.range.end), i); });
@@ -46,6 +58,7 @@ function lineStarts(program: FuncDecl, tokens: Token[]): { indent: Map<number, n
     return i;
   };
   const indent = new Map<number, number>();
+  const joined = new Map<number, number>();
   const headerNames = new Set<number>();
   const mark = (p: Pos, depth: number) => indent.set(find(byStart, p), depth);
 
@@ -58,8 +71,9 @@ function lineStarts(program: FuncDecl, tokens: Token[]): { indent: Map<number, n
     }
     block(f.body, depth, false);
   };
-  const block = (b: Block, depth: number, joined: boolean) => {
-    if (!joined) mark(b.range.start, depth);
+  const block = (b: Block, depth: number, onSameLine: boolean) => {
+    if (onSameLine) joined.set(find(byStart, b.range.start), depth);
+    else mark(b.range.start, depth);
     for (const s of b.stmts) stmt(s, depth + 1, false);
     indent.set(find(byEnd, b.range.end), depth);
   };
@@ -68,9 +82,10 @@ function lineStarts(program: FuncDecl, tokens: Token[]): { indent: Map<number, n
     if (s.kind === "block") block(s, depth, true);
     else stmt(s, depth + 1, false);
   };
-  const stmt = (s: Stmt, depth: number, joined: boolean) => {
-    if (s.kind === "block") { block(s, depth, joined); return; }
-    if (!joined) mark(s.range.start, depth);
+  const stmt = (s: Stmt, depth: number, onSameLine: boolean) => {
+    if (s.kind === "block") { block(s, depth, onSameLine); return; }
+    if (onSameLine) joined.set(find(byStart, s.range.start), depth);
+    else mark(s.range.start, depth);
     if (s.kind === "if") {
       body(s.then, depth);
       if (s.else) {
@@ -83,7 +98,7 @@ function lineStarts(program: FuncDecl, tokens: Token[]): { indent: Map<number, n
     }
   };
   func(program, 0);
-  return { indent, headerNames };
+  return { indent, joined, headerNames };
 }
 
 function layout(src: string, opts: FormatOptions): Layout | undefined {
@@ -92,7 +107,13 @@ function layout(src: string, opts: FormatOptions): Layout | undefined {
   const lexed = lex(src, { keepComments: true });
   const tokens = lexed.tokens.filter((t) => t.kind !== "eof");
   const comments = lexed.comments ?? [];
-  const { indent, headerNames } = lineStarts(parsed.program, tokens);
+  let starts: LineStarts;
+  try {
+    starts = lineStarts(parsed.program, tokens);
+  } catch {
+    return undefined;   // the tree and the tokens disagree: leave the text alone
+  }
+  const { indent, joined, headerNames } = starts;
 
   // Tokens and comments in source order.
   const items: Item[] = [];
@@ -105,6 +126,13 @@ function layout(src: string, opts: FormatOptions): Layout | undefined {
     items.push({ token, index, range: token.range });
   });
   for (; ci < comments.length; ci++) items.push({ comment: comments[ci], range: comments[ci].range });
+  // For every item, the next token after it, found in one backward pass.
+  const nextToken: (Extract<Item, { token: Token }> | undefined)[] = new Array(items.length);
+  for (let k = items.length - 1, found: Extract<Item, { token: Token }> | undefined; k >= 0; k--) {
+    nextToken[k] = found;
+    const it = items[k];
+    if ("token" in it) found = it;
+  }
 
   const eol = /^[^\n]*\r\n/.test(src) ? "\r\n" : "\n";
   const unit = opts.insertSpaces ? " ".repeat(Math.max(opts.tabSize, 1)) : "\t";
@@ -158,7 +186,13 @@ function layout(src: string, opts: FormatOptions): Layout | undefined {
       if (lines.length === 0) start(d ?? 0, false);
       else if (joinNext) lines[lines.length - 1] += " ";
       else if (d !== undefined) start(d, blank && item.token.kind !== "}");
-      else if (breakNext) start(depth + 1, false);
+      else if (breakNext) {
+        // A comment pushed this token off its line. A body "{" or the "if" of
+        // "else if" keeps the depth of its statement, anything else is a continuation.
+        const own = joined.get(item.index);
+        start(own ?? depth + 1, false);
+        if (own !== undefined) depth = own;
+      }
       else if (prevWasComment || space(prevToken, item.index)) lines[lines.length - 1] += " ";
       if (d !== undefined) depth = d;
       outStart[k] = here();
@@ -175,7 +209,7 @@ function layout(src: string, opts: FormatOptions): Layout | undefined {
       } else {
         // Own line: the indent of the next token's line, one deeper inside a block
         // that ends there, or a continuation indent inside a statement.
-        const next = items.slice(k + 1).find((it): it is Extract<Item, { token: Token }> => "token" in it);
+        const next = nextToken[k];
         const d = next ? indent.get(next.index) : 0;
         start(d === undefined ? depth + 1 : next?.token.kind === "}" ? d + 1 : d, blank);
       }
@@ -185,8 +219,9 @@ function layout(src: string, opts: FormatOptions): Layout | undefined {
       if (!c.block) breakNext = true;
       else if (!trailing) {
         const next = items[k + 1];
-        if (next && next.range.start.line === c.range.end.line) joinNext = "token" in next;
-        else breakNext = true;
+        // A token on the comment's line stays there, except a "}", which keeps its own line.
+        if (next && next.range.start.line === c.range.end.line) joinNext = "token" in next && next.token.kind !== "}";
+        if (!joinNext && !(next && "comment" in next && next.range.start.line === c.range.end.line)) breakNext = true;
       }
       prevWasComment = true;
     }
