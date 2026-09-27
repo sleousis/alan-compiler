@@ -172,6 +172,7 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "mocha",
     "test:grammar": "vscode-tmgrammar-test \"test/grammar/*.alan\"",
+    "test:e2e": "node test/e2e/run.mjs",
     "vscode:prepublish": "npm run build"
   },
   "devDependencies": {
@@ -179,6 +180,7 @@
     "@types/node": "^22.20.4",
     "@types/vscode": "1.104.0",
     "@types/yauzl": "^3.4.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.2",
     "mocha": "^12.0.2",
