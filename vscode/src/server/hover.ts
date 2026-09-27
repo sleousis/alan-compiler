@@ -1,5 +1,7 @@
 // Hover and signature help. Both show declarations in Alan syntax.
-import { declarationText, libraryDoc, scopeAtPosition, symbolAt } from "./analysis";
+import { FuncDecl } from "./ast";
+import { analyzeSource, declarationText, libraryDoc, scopeAtPosition, symbolAt } from "./analysis";
+import { signatureParts } from "./library";
 import { Pos, lex } from "./lexer";
 import { Analysis, visible } from "./scopes";
 
@@ -20,11 +22,24 @@ export interface SignatureInfo {
   documentation?: string;
 }
 
+/** Start positions of the names of every function header in the tree. */
+function headerNames(program: FuncDecl | undefined): Set<string> {
+  const out = new Set<string>();
+  const stack = program ? [program] : [];
+  while (stack.length) {
+    const f = stack.pop()!;
+    out.add(`${f.nameRange.start.line}:${f.nameRange.start.character}`);
+    for (const local of f.locals) if (local.kind === "func") stack.push(local);
+  }
+  return out;
+}
+
 /**
  * Finds the call whose argument list holds the position by walking the
- * tokens before it backwards, so it also works in an unfinished call.
+ * tokens before it backwards, so it also works in an unfinished call. The
+ * parameter list of a function header is not a call.
  */
-function enclosingCall(src: string, pos: Pos): { name: string; argIndex: number } | undefined {
+function enclosingCall(src: string, pos: Pos, program: FuncDecl | undefined): { name: string; argIndex: number } | undefined {
   const tokens = lex(src).tokens.filter((t) => t.kind !== "eof" && (
     t.range.end.line < pos.line || (t.range.end.line === pos.line && t.range.end.character <= pos.character)));
   let depth = 0;
@@ -34,32 +49,30 @@ function enclosingCall(src: string, pos: Pos): { name: string; argIndex: number 
     if (k === ")" || k === "]") depth++;
     else if (k === "(" || k === "[") {
       if (depth > 0) { depth--; continue; }
-      if (k === "(" && tokens[i - 1]?.kind === "id") return { name: tokens[i - 1].text, argIndex: commas };
+      const name = tokens[i - 1];
+      if (k === "(" && name?.kind === "id") {
+        if (headerNames(program).has(`${name.range.start.line}:${name.range.start.character}`)) return undefined;
+        return { name: name.text, argIndex: commas };
+      }
       // An open index or grouping parenthesis: the call, if any, is further out.
       commas = 0;
     } else if (depth === 0) {
       if (k === ",") commas++;
-      else if (k === ";" || k === "{" || k === "}") return undefined;
+      // A ":" only appears in declarations, never in arguments.
+      else if (k === ";" || k === "{" || k === "}" || k === ":") return undefined;
     }
   }
   return undefined;
 }
 
 export function signatureHelp(src: string, pos: Pos, fallback?: Analysis): SignatureInfo | undefined {
-  const call = enclosingCall(src, pos);
+  const call = enclosingCall(src, pos, analyzeSource(src).program);
   if (!call) return undefined;
   const scope = scopeAtPosition(src, pos, fallback);
   const sym = scope && visible(scope).find((s) => s.name === call.name);
   if (!sym || !sym.params) return undefined;
 
-  const label = declarationText(sym);
-  const parameters: [number, number][] = [];
-  let at = sym.name.length + 2;                     // past "name ("
-  for (const p of sym.params) {
-    const text = `${p.name} : ${p.type}`;
-    parameters.push([at, at + text.length]);
-    at += text.length + 2;                          // past ", "
-  }
+  const { label, parameters } = signatureParts({ name: sym.name, params: sym.params, ret: sym.typeText });
   const info: SignatureInfo = { label, activeParameter: call.argIndex, parameters };
   const doc = libraryDoc(sym);
   if (doc) info.documentation = doc;

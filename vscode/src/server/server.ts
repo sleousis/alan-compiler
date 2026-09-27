@@ -27,6 +27,19 @@ interface DocState {
 }
 const states = new Map<string, DocState>();
 
+/**
+ * Runs a handler body. An exception in the analysis fails only this request
+ * or refresh: it is logged and the fallback value is returned.
+ */
+function guard<T>(what: string, fallback: T, body: () => T): T {
+  try {
+    return body();
+  } catch (e) {
+    connection.console.error(`${what} failed: ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
+    return fallback;
+  }
+}
+
 function state(uri: string): DocState {
   let s = states.get(uri);
   if (!s) {
@@ -43,15 +56,18 @@ function publish(uri: string) {
 
 function refresh(doc: TextDocument) {
   const s = state(doc.uri);
-  const text = doc.getText();
-  const { analysis, clean } = analyzeSource(text);
-  if (clean && analysis) s.lastGood = analysis;
-  s.live = computeDiagnostics(text).map((d) => ({
-    range: d.range,
-    message: d.message,
-    severity: d.severity === "error" ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
-    source: d.source,
-  }));
+  const source = analyzeSource(doc.getText());
+  if (source.clean && source.analysis) s.lastGood = source.analysis;
+  s.live = computeDiagnostics(source).map((d) => {
+    const out: Diagnostic = {
+      range: d.range,
+      message: d.message,
+      severity: d.severity === "error" ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
+      source: d.source,
+    };
+    if (d.code) out.code = d.code;
+    return out;
+  });
   publish(doc.uri);
 }
 
@@ -61,7 +77,8 @@ function schedule(doc: TextDocument) {
   s.timer = setTimeout(() => {
     s.timer = undefined;
     const current = documents.get(doc.uri);
-    if (current) refresh(current);
+    // On failure the previous diagnostics stay.
+    if (current) guard("Analysis", undefined, () => refresh(current));
   }, DEBOUNCE_MS);
 }
 
@@ -86,6 +103,7 @@ documents.onDidClose((e) => {
 });
 
 connection.onNotification("alan/compilerDiagnostics", (p: { uri: string; diagnostics: Diagnostic[] }) => {
+  if (!documents.get(p.uri)) return;
   state(p.uri).compiler = p.diagnostics;
   publish(p.uri);
 });
@@ -99,7 +117,7 @@ const COMPLETION_KINDS: Record<CompletionEntry["kind"], CompletionItemKind> = {
   snippet: CompletionItemKind.Snippet,
 };
 
-connection.onCompletion((p): CompletionItem[] => {
+connection.onCompletion((p): CompletionItem[] => guard("Completion", [], () => {
   const doc = documents.get(p.textDocument.uri);
   if (!doc) return [];
   return completions(doc.getText(), p.position, states.get(doc.uri)?.lastGood).map((c) => {
@@ -109,15 +127,15 @@ connection.onCompletion((p): CompletionItem[] => {
     if (c.insertText) item.insertText = c.insertText;
     return item;
   });
-});
+}));
 
-connection.onHover((p) => {
+connection.onHover((p) => guard("Hover", null, () => {
   const doc = documents.get(p.textDocument.uri);
   const text = doc && hover(doc.getText(), p.position);
   return text ? { contents: { kind: MarkupKind.Markdown, value: text } } : null;
-});
+}));
 
-connection.onSignatureHelp((p) => {
+connection.onSignatureHelp((p) => guard("Signature help", null, () => {
   const doc = documents.get(p.textDocument.uri);
   const s = doc && signatureHelp(doc.getText(), p.position, states.get(doc.uri)?.lastGood);
   if (!s) return null;
@@ -130,13 +148,13 @@ connection.onSignatureHelp((p) => {
     activeSignature: 0,
     activeParameter: s.activeParameter,
   };
-});
+}));
 
-connection.onDefinition((p) => {
+connection.onDefinition((p) => guard("Definition", null, () => {
   const doc = documents.get(p.textDocument.uri);
   const range = doc && definition(doc.getText(), p.position);
   return range ? { uri: p.textDocument.uri, range } : null;
-});
+}));
 
 function toDocumentSymbol(s: OutlineSymbol): DocumentSymbol {
   return {
@@ -148,10 +166,10 @@ function toDocumentSymbol(s: OutlineSymbol): DocumentSymbol {
   };
 }
 
-connection.onDocumentSymbol((p) => {
+connection.onDocumentSymbol((p) => guard("Outline", [], () => {
   const doc = documents.get(p.textDocument.uri);
   return doc ? documentSymbols(doc.getText()).map(toDocumentSymbol) : [];
-});
+}));
 
 documents.listen(connection);
 connection.listen();

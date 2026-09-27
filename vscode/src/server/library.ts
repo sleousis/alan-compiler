@@ -36,5 +36,20 @@ export const LIBRARY: LibFunc[] = [
 
 /** A function header as Alan text, such as "readString (n : int, s : reference byte[]) : proc". */
 export function signature(f: { name: string; params: { name: string; type: string }[]; ret: string }): string {
-  return `${f.name} (${f.params.map((p) => `${p.name} : ${p.type}`).join(", ")}) : ${f.ret}`;
+  return signatureParts(f).label;
+}
+
+/** The header text with the start and end offset of each parameter in it. */
+export function signatureParts(f: { name: string; params: { name: string; type: string }[]; ret: string }):
+  { label: string; parameters: [number, number][] } {
+  let label = `${f.name} (`;
+  const parameters: [number, number][] = [];
+  f.params.forEach((p, i) => {
+    if (i > 0) label += ", ";
+    const start = label.length;
+    label += `${p.name} : ${p.type}`;
+    parameters.push([start, label.length]);
+  });
+  label += `) : ${f.ret}`;
+  return { label, parameters };
 }

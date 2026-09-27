@@ -11,7 +11,7 @@
 //   the body of the function that declares it, because the compiler files the
 //   name in that scope at the nesting level of the function's own scope.
 // It works on partial trees from files with syntax errors and never throws.
-import { Call, Cond, Diagnostic, Expr, FuncDecl, Stmt, VarDecl } from "./ast";
+import { Call, Cond, Diagnostic, Expr, FuncDecl, NameErrorCode, Stmt, VarDecl } from "./ast";
 import { LIBRARY } from "./library";
 import { Pos, Range } from "./lexer";
 
@@ -49,13 +49,13 @@ class Analyzer {
   /** Parameters and variables that hold an array, for the index check. */
   private readonly arrays = new Set<Sym>();
 
-  private error(message: string, range: Range) {
-    this.diagnostics.push({ message, range, severity: "error", source: "alan" });
+  private error(code: NameErrorCode, message: string, range: Range) {
+    this.diagnostics.push({ message, range, severity: "error", source: "alan", code });
   }
 
   /** Adds a parameter or local to a scope unless the name is already there. */
   private declare(scope: Scope, sym: Sym, range: Range) {
-    if (scope.symbols.has(sym.name)) this.error(`'${sym.name}' is already declared in this scope`, range);
+    if (scope.symbols.has(sym.name)) this.error("duplicate", `'${sym.name}' is already declared in this scope`, range);
     else scope.symbols.set(sym.name, sym);
   }
 
@@ -73,7 +73,7 @@ class Analyzer {
     for (let s: Scope | undefined = parent; s?.owner; s = s.parent) {
       if (!s.symbols.has(f.name)) continue;
       const where = s === parent ? "this scope" : "an enclosing function";
-      this.error(`'${f.name}' is already declared in ${where}`, f.nameRange);
+      this.error("duplicate", `'${f.name}' is already declared in ${where}`, f.nameRange);
       clash = true;
       break;
     }
@@ -168,25 +168,25 @@ class Analyzer {
   private useName(name: string, range: Range, scope: Scope, indexed: boolean) {
     const found = this.lookup(scope, name);
     this.references.push(found ? { name, range, target: found.sym } : { name, range });
-    if (!found) return this.error(`Unknown name '${name}'`, range);
+    if (!found) return this.error("unknown-name", `Unknown name '${name}'`, range);
     const { sym } = found;
     if (indexed) {
-      if (!this.arrays.has(sym)) this.error(`'${name}' is not an array`, range);
+      if (!this.arrays.has(sym)) this.error("not-an-array", `'${name}' is not an array`, range);
     } else if (sym.kind === "library" || (sym.kind === "function" && found.scope === scope && sym.decl !== scope.owner)) {
       // The compiler misses a nested function by plain name only in the body that declares it.
-      this.error(`'${name}' is a function, not a variable`, range);
+      this.error("not-a-variable", `'${name}' is a function, not a variable`, range);
     }
   }
 
   private useCall(call: Call, scope: Scope) {
     const found = this.lookup(scope, call.name);
     this.references.push(found ? { name: call.name, range: call.nameRange, target: found.sym } : { name: call.name, range: call.nameRange });
-    if (!found) return this.error(`Unknown name '${call.name}'`, call.nameRange);
+    if (!found) return this.error("unknown-name", `Unknown name '${call.name}'`, call.nameRange);
     const { sym } = found;
-    if (!isFunction(sym)) return this.error(`'${call.name}' is not a function`, call.nameRange);
+    if (!isFunction(sym)) return this.error("not-a-function", `'${call.name}' is not a function`, call.nameRange);
     const want = sym.params?.length ?? 0;
     if (want !== call.args.length) {
-      this.error(`'${call.name}' expects ${want} argument${want === 1 ? "" : "s"} but got ${call.args.length}`, call.nameRange);
+      this.error("argument-count", `'${call.name}' expects ${want} argument${want === 1 ? "" : "s"} but got ${call.args.length}`, call.nameRange);
     }
   }
 }

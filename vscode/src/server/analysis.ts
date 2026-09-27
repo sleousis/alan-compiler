@@ -29,17 +29,19 @@ export function analyzeSource(src: string): SourceAnalysis {
 const comparePos = (a: Pos, b: Pos) => a.line - b.line || a.character - b.character;
 
 /**
- * The scope around a position. The current text wins when it puts the
- * position inside a function. Otherwise the fallback (the last analysis of a
- * clean text) is used, and last the current root, which holds the library.
+ * The scope around a position. A clean current text always decides. A text
+ * with syntax errors decides when it puts the position inside a function.
+ * Otherwise the fallback (the last analysis of a clean text) gives the names
+ * of its outermost function, since positions in the old text no longer match.
+ * Last comes the current root, which holds the library.
  */
 export function scopeAtPosition(src: string, pos: Pos, fallback?: Analysis): Scope | undefined {
-  const current = analyzeSource(src).analysis;
+  const { analysis: current, clean } = analyzeSource(src);
   if (current) {
     const scope = scopeAt(current.root, pos);
-    if (scope.owner) return scope;
+    if (clean || scope.owner) return scope;
   }
-  if (fallback) return scopeAt(fallback.root, pos);
+  if (fallback) return fallback.root.children[0] ?? fallback.root;
   return current?.root;
 }
 

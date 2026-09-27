@@ -1,18 +1,17 @@
 // Live diagnostics: lexer and parser errors plus the name checks of scopes.ts.
 import { Diagnostic } from "./ast";
-import { analyzeSource } from "./analysis";
+import { SourceAnalysis, analyzeSource } from "./analysis";
 
 /**
- * While the file has syntax errors, the partial tree makes most name errors
- * unreliable (a broken declaration looks like an unknown name). Only
- * duplicate declarations are shown then.
+ * Diagnostics for a text, or for a text already analysed. While the file has
+ * syntax errors the partial tree makes most name errors unreliable (a broken
+ * declaration looks like an unknown name), so only duplicate declarations
+ * are shown then.
  */
-const TRUSTED_WHILE_BROKEN = /is already declared/;
-
-export function computeDiagnostics(src: string): Diagnostic[] {
-  const { syntax, analysis, clean } = analyzeSource(src);
+export function computeDiagnostics(source: string | SourceAnalysis): Diagnostic[] {
+  const { syntax, analysis, clean } = typeof source === "string" ? analyzeSource(source) : source;
   const names = analysis?.diagnostics ?? [];
-  const shown = clean ? names : names.filter((d) => TRUSTED_WHILE_BROKEN.test(d.message));
+  const shown = clean ? names : names.filter((d) => d.code === "duplicate");
   return [...syntax, ...shown].sort(
     (a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character,
   );

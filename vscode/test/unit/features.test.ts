@@ -44,6 +44,14 @@ describe("diagnostics", () => {
     assert.ok(m.some(x => /expected an expression/.test(x)), "syntax");
     assert.ok(!m.some(x => /Unknown name|expects|is a function/.test(x)), m.join("\n"));
   });
+  it("gives each name error a code", () => {
+    const d = computeDiagnostics("m () : proc\n x : int;\n x : int;\n f (a : int) : proc\n {}\n{ y = 1; f(); x = f; x[0] = 1; x(); }");
+    assert.deepEqual(d.map(x => x.code), ["duplicate", "unknown-name", "argument-count", "not-a-variable", "not-an-array", "not-a-function"]);
+  });
+  it("accepts a text already analysed", () => {
+    const text = "m () : proc\n{ y = 1; }";
+    assert.deepEqual(computeDiagnostics(analyzeSource(text)), computeDiagnostics(text));
+  });
   it("reports lexer errors", () => {
     assert.ok(messages("m () : proc\n{ writeChar('ab'); }").includes("Illegal character literal"));
   });
@@ -88,6 +96,18 @@ describe("completion", () => {
     assert.equal(good.clean, true);
     const labels = completions("{", { line: 0, character: 1 }, good.analysis).map(c => c.label);
     assert.ok(labels.includes("total"));
+  });
+  it("ignores a stale fallback when the current text is clean", () => {
+    const stale = analyzeSource(src).analysis;
+    const labels = completions("m () : proc\n x : int;\n{ x = 1; }\n    ", { line: 3, character: 4 }, stale).map(c => c.label);
+    for (const l of ["a", "b", "add", "total"]) assert.ok(!labels.includes(l), l);
+    const inside = completions("m () : proc\n x : int;\n{ x = 1; }", { line: 2, character: 2 }, stale).map(c => c.label);
+    assert.ok(inside.includes("x") && !inside.includes("total"));
+  });
+  it("takes only the outermost function's names from the fallback", () => {
+    const labels = completions("{", { line: 3, character: 4 }, analyzeSource(src).analysis).map(c => c.label);
+    assert.ok(labels.includes("total") && labels.includes("add"));
+    assert.ok(!labels.includes("a") && !labels.includes("b"));
   });
   it("offers keywords and the library without any tree", () => {
     const labels = completions("", { line: 0, character: 0 }).map(c => c.label);
@@ -134,6 +154,11 @@ describe("signature help", () => {
   it("gives the offsets of each parameter in the label", () => {
     const s = signatureHelp(src, { line: 5, character: 14 })!;
     assert.deepEqual(s.parameters.map(([a, b]) => s.label.slice(a, b)), ["a : int", "b : int"]);
+  });
+  it("gives nothing in the parameter list of a function header", () => {
+    assert.equal(signatureHelp("m () : proc\n f (a : int, ", { line: 1, character: 13 }), undefined);
+    assert.equal(signatureHelp("m (", { line: 0, character: 3 }), undefined);
+    assert.equal(signatureHelp(src, { line: 2, character: 6 }), undefined);
   });
   it("gives nothing outside a call", () => {
     assert.equal(signatureHelp(src, { line: 5, character: 20 }), undefined);
