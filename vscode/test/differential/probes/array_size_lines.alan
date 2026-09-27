@@ -1,0 +1,4 @@
+main () : proc
+  a : int[0]
+  ;
+{ }

@@ -1,0 +1,4 @@
+main () : proc
+  f () : proc { g(); }
+  g () : proc { }
+{ f(); }

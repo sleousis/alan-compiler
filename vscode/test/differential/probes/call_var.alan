@@ -1,0 +1,11 @@
+main () : proc
+  x : int;
+  b : byte;
+  a : int[5];
+  s : byte[5];
+  p () : proc { }
+  h () : int { return 1; }
+  inc (n : reference int) : proc { n = n + 1; }
+{
+  x();
+}

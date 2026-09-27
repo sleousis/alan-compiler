@@ -1,0 +1,2 @@
+# The probes are byte-exact programs, like the compiler's test inputs.
+*.alan -text

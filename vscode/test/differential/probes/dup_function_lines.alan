@@ -1,0 +1,8 @@
+main () : proc
+  f () : proc { }
+  f
+  ()
+  :
+  int
+  { return 1; }
+{ }

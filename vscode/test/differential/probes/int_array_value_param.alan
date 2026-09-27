@@ -1,0 +1,3 @@
+main () : proc
+  f (a : byte[]) : proc { }
+{ }

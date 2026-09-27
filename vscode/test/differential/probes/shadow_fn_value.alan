@@ -1,0 +1,6 @@
+main () : proc
+  a : int;
+  g () : proc
+    a () : proc { }
+  { a = 1; }
+{ a = 1; }

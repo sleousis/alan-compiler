@@ -1,0 +1,4 @@
+main () : proc
+  p () : proc { }
+  q () : proc { return p(); }
+{ }

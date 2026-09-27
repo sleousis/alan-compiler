@@ -1,0 +1,3 @@
+main () : proc
+  f (f : int) : int { return f; }
+{ writeInteger(f(2)); }
