@@ -210,8 +210,8 @@ void yyerror (const char msg[]) {
 /* Parse the file at path and check it. When codegen is true, also generate
    the LLVM module that alan_module() returns. Returns 0 on success. Errors
    in the program are reported on stderr and end the process with exit
-   code 1. */
-int compile_to_module(const char *path, bool optimize, bool codegen) {
+   code 1. When debug is true, the module carries DWARF debug information. */
+int compile_to_module(const char *path, bool optimize, bool codegen, bool debug) {
   opt = optimize;
   yyin = fopen(path, "r");
   if (yyin == NULL) {
@@ -227,7 +227,7 @@ int compile_to_module(const char *path, bool optimize, bool codegen) {
   createLibrary();
   ast_sem(tree,NULL);
   destroySymbolTable();
-  if (codegen && !llvm_compile(tree)) return 1;
+  if (codegen && !llvm_compile(tree, debug ? path : nullptr)) return 1;
   return 0;
 }
 

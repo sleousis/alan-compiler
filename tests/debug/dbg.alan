@@ -1,0 +1,10 @@
+main () : proc
+  total : int;
+  add (a : int, b : int) : int
+  {
+    return a + b;
+  }
+{
+  total = add(40, 2);
+  writeInteger(total);
+}

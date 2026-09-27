@@ -208,6 +208,37 @@ jobs:
           $pdb = @(Get-ChildItem -Path $env:TEMP -Filter 'alan*.pdb')
           if ($pdb.Count -ne 0) { $pdb.FullName; exit 1 }
 
+      # A program built with -g must show LLDB its source lines, frames and
+      # variables. Linux gets lldb from apt.llvm.org, macOS has Xcode's and
+      # Windows uses the one in the LLVM package that the build downloaded.
+      - name: Test debug information
+        env:
+          ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
+        run: |
+          llvm="${{ steps.versions.outputs.llvm }}"
+          case "${{ matrix.platform }}" in
+            linux-*)
+              curl -fsSL --retry 5 https://apt.llvm.org/llvm-snapshot.gpg.key \
+                | gpg --dearmor > /etc/apt/trusted.gpg.d/apt.llvm.org.gpg
+              echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-${llvm%%.*} main" \
+                > /etc/apt/sources.list.d/llvm.list
+              apt-get update
+              apt-get install -y "lldb-${llvm%%.*}"
+              lldb="lldb-${llvm%%.*}"
+              alanc="dist/${{ matrix.platform }}/bin/alanc" ;;
+            macos-*)
+              lldb=lldb
+              alanc="dist/${{ matrix.platform }}/bin/alanc" ;;
+            windows-x64)
+              lldb="$RUNNER_TEMP/clang+llvm-$llvm-x86_64-pc-windows-msvc/bin/lldb.exe"
+              alanc="dist/${{ matrix.platform }}/bin/alanc.exe" ;;
+            windows-arm64)
+              lldb="$RUNNER_TEMP/clang+llvm-$llvm-aarch64-pc-windows-msvc/bin/lldb.exe"
+              alanc="dist/${{ matrix.platform }}/bin/alanc.exe" ;;
+          esac
+          "$lldb" --version
+          $PYTHON tests/debug/lldb_check.py --alanc "$alanc" --lldb "$lldb"
+
       # The bundle carries the zig that the tests used. On Windows ARM64
       # that is the x86_64 build, which runs under emulation.
       - name: Package

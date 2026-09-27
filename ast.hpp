@@ -57,7 +57,8 @@ ast ast_seq (ast l, ast r, int line);
 int ast_run (ast tree);
 Type_T ast_sem(ast tree, SymbolEntry * f);
 Value * ast_compile (ast t);
-bool llvm_compile (ast t);
+// debugFile is the source path for -g, nullptr without debug information.
+bool llvm_compile (ast t, const char *debugFile);
 Module *alan_module ();
 
 #endif

@@ -13,7 +13,7 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
-int compile_to_module(const char *path, bool opt, bool codegen);
+int compile_to_module(const char *path, bool opt, bool codegen, bool debug);
 llvm::Module *alan_module();
 
 /* Target that alanc builds programs for: the host it runs on. */
@@ -35,13 +35,20 @@ static const char *kExe = ".exe";
 #else
 static const char *kExe = "";
 #endif
+/* Whether a debug build keeps its object file, where LLDB finds the DWARF
+   through the executable's debug map. */
+#ifdef __APPLE__
+static const bool kKeepObject = true;
+#else
+static const bool kKeepObject = false;
+#endif
 
 static int usage() {
   fprintf(stderr,
     "usage: alanc <file.alan> [-O]           print LLVM IR\n"
     "       alanc check <file.alan>          check only\n"
-    "       alanc build <file.alan> [-o name] [-O]\n"
-    "       alanc run <file.alan> [-O]\n");
+    "       alanc build <file.alan> [-o name] [-O] [-g]\n"
+    "       alanc run <file.alan> [-O] [-g]\n");
   return 2;
 }
 
@@ -72,6 +79,8 @@ struct BuildOptions {
   const char *src = nullptr;
   std::string out;
   bool opt = false;
+  /* -g: DWARF debug information, which turns -O off. */
+  bool debug = false;
 };
 
 /* Parses "<file> [options]" after the command name. Returns false on a
@@ -82,6 +91,8 @@ static bool parse_build_options(int argc, char **argv, bool allowOut,
     const char *a = argv[i];
     if (strcmp(a, "-O") == 0) {
       o.opt = true;
+    } else if (strcmp(a, "-g") == 0) {
+      o.debug = true;
     } else if (allowOut && strcmp(a, "-o") == 0) {
       if (++i >= argc) return false;
       o.out = argv[i];
@@ -91,17 +102,23 @@ static bool parse_build_options(int argc, char **argv, bool allowOut,
       o.src = a;
     }
   }
+  if (o.debug) o.opt = false;
   return o.src != nullptr;
 }
 
 /* Emits the compiled module and links it with the runtime into the
-   executable out. */
+   executable out. The object goes to keptObj when that is not empty and
+   stays there, otherwise to a temporary file. debug keeps the debug
+   information in out. */
 static int link_module(const char *argv0, const char *src,
-                       const std::string &out) {
-  llvm::SmallString<256> obj;
-  if (std::error_code ec = llvm::sys::fs::createTemporaryFile("alan", "o", obj)) {
-    cli_error(src, "cannot create a temporary file: " + ec.message());
-    return 1;
+                       const std::string &out, const std::string &keptObj,
+                       bool debug) {
+  llvm::SmallString<256> obj(keptObj);
+  if (keptObj.empty()) {
+    if (std::error_code ec = llvm::sys::fs::createTemporaryFile("alan", "o", obj)) {
+      cli_error(src, "cannot create a temporary file: " + ec.message());
+      return 1;
+    }
   }
   std::string err;
   if (!emit_object(*alan_module(), kTriple, std::string(obj), err)) {
@@ -114,13 +131,25 @@ static int link_module(const char *argv0, const char *src,
   std::vector<std::string> args = {zig, "cc", "-target", kTriple,
                                    std::string(obj), rt, "-o", out};
 #ifdef _WIN32
-  /* Without -s the Windows linker writes a .pdb next to the output. */
-  args.push_back("-s");
+  /* Without -s the Windows linker writes a .pdb next to the output. A debug
+     build needs the DWARF that -s strips, so it removes the .pdb below. */
+  if (!debug) args.push_back("-s");
+#else
+  (void)debug;
 #endif
   std::vector<llvm::StringRef> refs(args.begin(), args.end());
   std::string execErr;
   int rc = llvm::sys::ExecuteAndWait(zig, refs, std::nullopt, {}, 0, 0, &execErr);
-  llvm::sys::fs::remove(obj);
+  if (keptObj.empty()) llvm::sys::fs::remove(obj);
+#ifdef _WIN32
+  if (debug) {
+    /* The .pdb holds only the symbol names, and LLDB reads the DWARF in
+       the executable. */
+    llvm::SmallString<256> pdb(out);
+    llvm::sys::path::replace_extension(pdb, "pdb");
+    llvm::sys::fs::remove(pdb);
+  }
+#endif
   if (rc == -1) {
     cli_error(src, "cannot run zig at " + zig + ": " + execErr);
     return 1;
@@ -162,8 +191,11 @@ static int cmd_build(const char *argv0, const BuildOptions &o) {
                          : "the output file is the source file, use another -o");
     return 1;
   }
-  if (compile_to_module(o.src, o.opt, true) != 0) return 1;
-  return link_module(argv0, o.src, out);
+  if (compile_to_module(o.src, o.opt, true, o.debug) != 0) return 1;
+  /* On macOS the executable does not hold the DWARF. LLDB reads it from the
+     object, which the executable names, so the object stays next to it. */
+  std::string keptObj = kKeepObject && o.debug ? out + ".o" : "";
+  return link_module(argv0, o.src, out, keptObj, o.debug);
 }
 
 /* Builds into a temporary executable, runs it with the standard streams
@@ -171,7 +203,7 @@ static int cmd_build(const char *argv0, const BuildOptions &o) {
 static int cmd_run(const char *argv0, const BuildOptions &o) {
   /* Compile first: some compile errors exit the process, which would leave
      the temporary file behind. */
-  if (compile_to_module(o.src, o.opt, true) != 0) return 1;
+  if (compile_to_module(o.src, o.opt, true, o.debug) != 0) return 1;
   llvm::SmallString<256> exe;
   if (std::error_code ec =
           llvm::sys::fs::createTemporaryFile("alan", kExe[0] ? kExe + 1 : "", exe)) {
@@ -179,9 +211,13 @@ static int cmd_run(const char *argv0, const BuildOptions &o) {
     return 1;
   }
   std::string path(exe);
-  int rc = link_module(argv0, o.src, path);
+  /* On macOS the object must outlive the program for a debugger to read its
+     DWARF (see cmd_build). */
+  std::string keptObj = kKeepObject && o.debug ? path + ".o" : "";
+  int rc = link_module(argv0, o.src, path, keptObj, o.debug);
   if (rc != 0) {
     llvm::sys::fs::remove(path);
+    if (!keptObj.empty()) llvm::sys::fs::remove(keptObj);
     return rc;
   }
 #ifndef _WIN32
@@ -190,6 +226,7 @@ static int cmd_run(const char *argv0, const BuildOptions &o) {
   if (std::error_code ec =
           llvm::sys::fs::setPermissions(path, llvm::sys::fs::owner_all)) {
     llvm::sys::fs::remove(path);
+    if (!keptObj.empty()) llvm::sys::fs::remove(keptObj);
     cli_error(o.src, "cannot make the program executable: " + ec.message());
     return 1;
   }
@@ -198,6 +235,7 @@ static int cmd_run(const char *argv0, const BuildOptions &o) {
   std::string execErr;
   rc = llvm::sys::ExecuteAndWait(path, refs, std::nullopt, {}, 0, 0, &execErr);
   llvm::sys::fs::remove(path);
+  if (!keptObj.empty()) llvm::sys::fs::remove(keptObj);
   if (rc < 0) {
     cli_error(o.src, "program did not finish: " + execErr);
     return 1;
@@ -207,7 +245,7 @@ static int cmd_run(const char *argv0, const BuildOptions &o) {
 
 int alan_cli_main(int argc, char **argv) {
   if (argc >= 3 && strcmp(argv[1], "check") == 0)
-    return compile_to_module(argv[2], false, false);
+    return compile_to_module(argv[2], false, false, false);
   if (argc >= 2 && (strcmp(argv[1], "build") == 0 || strcmp(argv[1], "run") == 0)) {
     bool isBuild = strcmp(argv[1], "build") == 0;
     BuildOptions o;
@@ -215,7 +253,7 @@ int alan_cli_main(int argc, char **argv) {
     return isBuild ? cmd_build(argv[0], o) : cmd_run(argv[0], o);
   }
   if (argc == 2 || (argc == 3 && strcmp(argv[2], "-O") == 0)) {
-    int r = compile_to_module(argv[1], argc == 3, true);
+    int r = compile_to_module(argv[1], argc == 3, true, false);
     if (r == 0) alan_module()->print(llvm::outs(), nullptr);
     return r;
   }

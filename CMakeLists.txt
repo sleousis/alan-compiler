@@ -24,7 +24,7 @@ if(WIN32)
 endif()
 FLEX_TARGET(Lexer lexer.l ${CMAKE_BINARY_DIR}/lexer.cpp COMPILE_FLAGS ${FLEX_FLAGS})
 ADD_FLEX_BISON_DEPENDENCY(Lexer Parser)
-add_executable(alanc ast.cpp symbol.cpp error.cpp general.cpp cli.cpp emit.cpp
+add_executable(alanc ast.cpp symbol.cpp error.cpp general.cpp cli.cpp emit.cpp debuginfo.cpp
                ${BISON_Parser_OUTPUTS} ${FLEX_Lexer_OUTPUTS})
 target_include_directories(alanc PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
 # SYSTEM, so warnings in LLVM's headers are not reported (/external:I on MSVC).
