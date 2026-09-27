@@ -1,7 +1,7 @@
 {
   "name": "alan",
   "displayName": "Alan",
-  "description": "Alan language support: highlighting, live errors, completion, one-click run and debugging.",
+  "description": "Write, run and debug Alan programs: live errors that match the compiler, completion, formatting, rename, one-click Run and F5 debugging. Installs the compiler for you.",
   "version": "1.0.0",
   "publisher": "sleousis",
   "license": "MIT",
@@ -10,6 +10,24 @@
     "url": "https://github.com/sleousis/alan-compiler"
   },
   "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#1E2A78",
+    "theme": "dark"
+  },
+  "keywords": [
+    "alan",
+    "compiler",
+    "pascal",
+    "teaching",
+    "education",
+    "ntua",
+    "llvm",
+    "language server"
+  ],
+  "homepage": "https://github.com/sleousis/alan-compiler/tree/master/vscode#readme",
+  "bugs": {
+    "url": "https://github.com/sleousis/alan-compiler/issues"
+  },
   "engines": {
     "vscode": "^1.104.0"
   },

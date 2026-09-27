@@ -1,8 +1,22 @@
 # Alan for Visual Studio Code
 
-Write and run programs in Alan, the small Pascal-like teaching language, with the same comfort as a mainstream language. Open an `.alan` file to get colours, live errors, completion, formatting, rename and a debugger. One click installs the compiler, and one click runs your program.
+Write, run and debug programs in **Alan**, the small Pascal-like language of the NTUA Compilers course, with the comfort of a mainstream language. Errors appear as you type, in the compiler's own words. One click installs the compiler, one click runs your program, and F5 steps through it line by line.
 
 ![Highlighting, a live error and the completion list](images/editor.png)
+
+## Quick start
+
+1. Install this extension. VS Code also installs CodeLLDB, which the debugger uses.
+2. Open or create a file ending in `.alan`.
+3. When VS Code offers to install the Alan compiler, click **Install**. The download is checked against the release checksums and needs no admin rights.
+4. Press the play button in the editor title to run the program, or press F5 to debug it.
+
+```alan
+hello () : proc
+{
+  writeString("Hello world!\n");
+}
+```
 
 ## Features
 
