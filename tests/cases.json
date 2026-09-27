@@ -30,12 +30,6 @@
     "opt": true
   },
   {
-    "name": "papariatest",
-    "file": "Examples/papariatest.alan",
-    "input": null,
-    "opt": true
-  },
-  {
     "name": "prog1",
     "file": "Examples/prog1.alan",
     "input": "inputs/prog1.txt",
@@ -416,5 +410,63 @@
     "input": null,
     "opt": true,
     "expected": "regress/long_blocks.txt"
+  },
+  {
+    "name": "nesting_3000_ifs",
+    "file": "tests/regress/nesting_3000_ifs.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/nesting_3000_ifs.txt"
+  },
+  {
+    "name": "nesting_3000_ifs",
+    "file": "tests/regress/nesting_3000_ifs.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/nesting_3000_ifs.txt"
+  },
+  {
+    "name": "nesting_3000_expression",
+    "file": "tests/regress/nesting_3000_expression.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/nesting_3000_expression.txt"
+  },
+  {
+    "name": "nesting_3000_expression",
+    "file": "tests/regress/nesting_3000_expression.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/nesting_3000_expression.txt"
+  },
+  {
+    "name": "rt-readinteger",
+    "file": "tests/regress/rt-readinteger.alan",
+    "input": "inputs/rt-readinteger.txt",
+    "opt": true
+  },
+  {
+    "name": "rt-writeinteger",
+    "file": "tests/regress/rt-writeinteger.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "rt-readstring",
+    "file": "tests/regress/rt-readstring.alan",
+    "input": "inputs/rt-readstring.txt",
+    "opt": true
+  },
+  {
+    "name": "rt-writechar-zero",
+    "file": "tests/regress/rt-writechar-zero.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "rt-stdin-bytes",
+    "file": "tests/regress/rt-stdin-bytes.alan",
+    "input": "inputs/rt-stdin-bytes.txt",
+    "opt": true
   }
 ]

@@ -18,6 +18,9 @@ for name in ("alan", "alanc", "alan_lib_v2"):
     os.symlink(root / name, work / name)
 try:
     for c in cases:
+        # The cases in tests/regress have hand-written expected output.
+        if c["file"].startswith("tests/regress/"):
+            continue
         src = work / (c["name"] + ".alan")
         shutil.copyfile(root / c["file"], src)
         args = ["./alan"] + (["-O"] if c["opt"] else []) + [src.name]

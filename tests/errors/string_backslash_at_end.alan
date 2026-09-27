@@ -1,0 +1,6 @@
+-- A backslash at the end of the line leaves the string open.
+main () : proc
+{
+  writeString("abc\
+");
+}

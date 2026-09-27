@@ -67,8 +67,8 @@ void di_function(DebugInfo *d, Function *f, const char *name, unsigned line,
     names.push_back(p.first);
   }
   DIScope *scope = d->open.empty() ? static_cast<DIScope *>(d->file) : d->open.back().sp;
-  /* No linkage name: the program's main is main.1 in LLVM, and LLDB on
-     macOS would show that name in the frames. */
+  /* No linkage name: in LLVM an Alan function is named alan.<name>, and
+     LLDB on macOS would show that name in the frames. */
   DISubprogram *sp = d->b.createFunction(
       scope, name, StringRef(), d->file, line,
       d->b.createSubroutineType(d->b.getOrCreateTypeArray(types)), line,

@@ -2,10 +2,13 @@
 #include "debuginfo.hpp"
 #include "emit.hpp"
 #include "error.hpp"
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Module.h"
@@ -14,7 +17,13 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 int compile_to_module(const char *path, bool opt, bool codegen, bool debug);
 llvm::Module *alan_module();
@@ -65,6 +74,146 @@ static void cli_error(const char *where, const std::string &msg) {
   bool tty = stderr_is_tty();
   fprintf(stderr, "%s: %serror:%s %s\n", where, tty ? "\033[1;31m" : "",
           tty ? "\033[0m" : "", msg.c_str());
+}
+
+/* Exit status of alanc after Ctrl-C, as a shell gives for SIGINT. */
+static const int kInterruptedExit = 130;
+
+/* While a child process runs, Ctrl-C only sets a flag in alanc, so alanc
+   lives on to stop the child and remove its temporary files. A handler
+   that catches a signal is reset in the child, so the child still stops on
+   a Ctrl-C from the terminal. */
+class InterruptGuard {
+ public:
+  InterruptGuard() {
+    interrupted_ = 0;
+#ifdef _WIN32
+    SetConsoleCtrlHandler(on_ctrl, TRUE);
+#else
+    struct sigaction sa = {};
+    sa.sa_handler = on_signal;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, &old_);
+#endif
+  }
+  ~InterruptGuard() {
+#ifdef _WIN32
+    SetConsoleCtrlHandler(on_ctrl, FALSE);
+#else
+    sigaction(SIGINT, &old_, nullptr);
+#endif
+  }
+  InterruptGuard(const InterruptGuard &) = delete;
+  InterruptGuard &operator=(const InterruptGuard &) = delete;
+  static bool interrupted() { return interrupted_ != 0; }
+
+ private:
+  static volatile std::sig_atomic_t interrupted_;
+#ifdef _WIN32
+  static BOOL WINAPI on_ctrl(DWORD type) {
+    if (type != CTRL_C_EVENT && type != CTRL_BREAK_EVENT) return FALSE;
+    interrupted_ = 1;
+    return TRUE;
+  }
+#else
+  static void on_signal(int) { interrupted_ = 1; }
+  struct sigaction old_;
+#endif
+};
+volatile std::sig_atomic_t InterruptGuard::interrupted_ = 0;
+
+#ifdef _WIN32
+/* The exit code of a Windows program that Ctrl-C stopped. */
+static const DWORD kControlCExit = 0xC000013AUL;
+#endif
+
+/* Stops a child after a Ctrl-C that alanc got. hard makes sure it ends. */
+static void stop_child(const llvm::sys::ProcessInfo &pi, bool hard) {
+#ifdef _WIN32
+  /* Windows cannot send Ctrl-C to one process, so the child ends as if
+     Ctrl-C had stopped it. */
+  (void)hard;
+  TerminateProcess(pi.Process, kControlCExit);
+#else
+  kill(pi.Pid, hard ? SIGKILL : SIGINT);
+#endif
+}
+
+/* True when a child with this result ended because of Ctrl-C. A child
+   that alanc stopped counts too, unless it still exited normally. */
+static bool ended_by_interrupt(int rc, const std::string &err, bool stopped) {
+#ifdef _WIN32
+  (void)err;
+  (void)stopped;
+  return rc == static_cast<int>(kControlCExit);
+#else
+  /* -2 means the child ended from a signal, and err names the signal as
+     strsignal gives it. */
+  if (rc != -2) return false;
+  return stopped || err == strsignal(SIGINT);
+#endif
+}
+
+/* Runs a program and waits for it. A Ctrl-C that alanc gets meanwhile is
+   passed on to the program. interrupted tells whether the program ended
+   because of Ctrl-C. The result is as for ExecuteAndWait. */
+static int run_child(llvm::StringRef program, llvm::ArrayRef<llvm::StringRef> args,
+                     std::string &err, bool &interrupted) {
+  using namespace std::chrono;
+  interrupted = false;
+  InterruptGuard guard;
+  bool failed = false;
+  llvm::sys::ProcessInfo pi =
+      llvm::sys::ExecuteNoWait(program, args, std::nullopt, {}, 0, &err, &failed);
+  if (failed || pi.Pid == llvm::sys::ProcessInfo::InvalidPid) return -1;
+  bool stopped = false, killed = false;
+  steady_clock::time_point stoppedAt;
+  llvm::sys::ProcessInfo result;
+  for (;;) {
+    /* Polling: returns at once and never kills the child. */
+    result = llvm::sys::Wait(pi, 0, &err, nullptr, /*Polling*/ true);
+    if (result.Pid != llvm::sys::ProcessInfo::InvalidPid) break;
+    if (InterruptGuard::interrupted()) {
+      if (!stopped) {
+        stop_child(pi, false);
+        stopped = true;
+        stoppedAt = steady_clock::now();
+      } else if (!killed && steady_clock::now() - stoppedAt > seconds(2)) {
+        stop_child(pi, true);
+        killed = true;
+      }
+    }
+    std::this_thread::sleep_for(milliseconds(20));
+  }
+  interrupted = ended_by_interrupt(result.ReturnCode, err, stopped);
+  return result.ReturnCode;
+}
+
+/* A temporary file is also removed when a signal stops alanc. */
+static void track_temp(llvm::StringRef path) {
+  llvm::sys::RemoveFileOnSignal(path);
+}
+
+static void remove_temp(llvm::StringRef path) {
+  llvm::sys::fs::remove(path);
+  llvm::sys::DontRemoveFileOnSignal(path);
+}
+
+/* True when src can be read. Otherwise it says why. fopen opens a directory
+   on some systems, so a directory is caught here. */
+static bool source_readable(const char *src) {
+  std::error_code ec;
+  if (llvm::sys::fs::is_directory(src)) {
+    ec = std::make_error_code(std::errc::is_a_directory);
+  } else {
+    int fd;
+    ec = llvm::sys::fs::openFileForRead(src, fd);
+    if (!ec) llvm::sys::Process::SafelyCloseFileDescriptor(fd);
+  }
+  if (!ec) return true;
+  cli_error("alanc", std::string("cannot open ") + src + ": " + ec.message());
+  return false;
 }
 
 static std::string self_dir(const char *argv0) {
@@ -141,10 +290,12 @@ static int link_module(const char *argv0, const char *src,
       cli_error(src, "cannot create a temporary file: " + ec.message());
       return 1;
     }
+    track_temp(obj);
   }
   std::string err;
   if (!emit_object(*alan_module(), kTriple, std::string(obj), err)) {
-    llvm::sys::fs::remove(obj);
+    if (keptObj.empty()) remove_temp(obj);
+    else llvm::sys::fs::remove(obj);
     cli_error(src, err);
     return 1;
   }
@@ -161,8 +312,9 @@ static int link_module(const char *argv0, const char *src,
 #endif
   std::vector<llvm::StringRef> refs(args.begin(), args.end());
   std::string execErr;
-  int rc = llvm::sys::ExecuteAndWait(zig, refs, std::nullopt, {}, 0, 0, &execErr);
-  if (keptObj.empty()) llvm::sys::fs::remove(obj);
+  bool interrupted = false;
+  int rc = run_child(zig, refs, execErr, interrupted);
+  if (keptObj.empty()) remove_temp(obj);
 #ifdef _WIN32
   if (debug) {
     /* The .pdb holds only the symbol names, and LLDB reads the DWARF in
@@ -172,6 +324,7 @@ static int link_module(const char *argv0, const char *src,
     llvm::sys::fs::remove(pdb);
   }
 #endif
+  if (interrupted) return kInterruptedExit;
   if (rc == -1) {
     cli_error(src, "cannot run zig at " + zig + ": " + execErr);
     return 1;
@@ -218,6 +371,7 @@ static bool is_source(const char *src, const std::string &out) {
 }
 
 static int cmd_build(const char *argv0, const BuildOptions &o) {
+  if (!source_readable(o.src)) return 1;
   std::string out = o.out.empty() ? default_output(o.src) : o.out;
   if (is_source(o.src, out)) {
     cli_error(o.src, o.out.empty()
@@ -241,6 +395,7 @@ static int cmd_build(const char *argv0, const BuildOptions &o) {
 /* Builds into a temporary executable, runs it with the standard streams
    inherited and returns its exit status. */
 static int cmd_run(const char *argv0, const BuildOptions &o) {
+  if (!source_readable(o.src)) return 1;
   /* Compile first: some compile errors exit the process, which would leave
      the temporary file behind. */
   if (compile_to_module(o.src, o.opt, true, o.debug) != 0) return 1;
@@ -251,13 +406,18 @@ static int cmd_run(const char *argv0, const BuildOptions &o) {
     return 1;
   }
   std::string path(exe);
+  track_temp(path);
   /* On macOS the object must outlive the program for a debugger to read its
      DWARF (see cmd_build). */
   std::string keptObj = kKeepObject && o.debug ? path + ".o" : "";
+  if (!keptObj.empty()) track_temp(keptObj);
+  auto cleanup = [&] {
+    remove_temp(path);
+    if (!keptObj.empty()) remove_temp(keptObj);
+  };
   int rc = link_module(argv0, o.src, path, keptObj, o.debug);
   if (rc != 0) {
-    llvm::sys::fs::remove(path);
-    if (!keptObj.empty()) llvm::sys::fs::remove(keptObj);
+    cleanup();
     return rc;
   }
 #ifndef _WIN32
@@ -265,17 +425,17 @@ static int cmd_run(const char *argv0, const BuildOptions &o) {
      Mach-O linker keeps the mode of the file it overwrites. */
   if (std::error_code ec =
           llvm::sys::fs::setPermissions(path, llvm::sys::fs::owner_all)) {
-    llvm::sys::fs::remove(path);
-    if (!keptObj.empty()) llvm::sys::fs::remove(keptObj);
+    cleanup();
     cli_error(o.src, "cannot make the program executable: " + ec.message());
     return 1;
   }
 #endif
   std::vector<llvm::StringRef> refs = {path};
   std::string execErr;
-  rc = llvm::sys::ExecuteAndWait(path, refs, std::nullopt, {}, 0, 0, &execErr);
-  llvm::sys::fs::remove(path);
-  if (!keptObj.empty()) llvm::sys::fs::remove(keptObj);
+  bool interrupted = false;
+  rc = run_child(path, refs, execErr, interrupted);
+  cleanup();
+  if (interrupted) return kInterruptedExit;
   if (rc < 0) {
     cli_error(o.src, "program did not finish: " + execErr);
     return 1;
@@ -288,15 +448,21 @@ int alan_cli_main(int argc, char **argv) {
     llvm::outs() << "alanc " << alan_version(argv[0]) << "\n";
     return 0;
   }
-  if (argc >= 3 && strcmp(argv[1], "check") == 0)
+  if (argc >= 2 && strcmp(argv[1], "check") == 0) {
+    if (argc != 3 || argv[2][0] == '-') return usage();
+    if (!source_readable(argv[2])) return 1;
     return compile_to_module(argv[2], false, false, false);
+  }
   if (argc >= 2 && (strcmp(argv[1], "build") == 0 || strcmp(argv[1], "run") == 0)) {
     bool isBuild = strcmp(argv[1], "build") == 0;
     BuildOptions o;
     if (!parse_build_options(argc, argv, isBuild, o)) return usage();
     return isBuild ? cmd_build(argv[0], o) : cmd_run(argv[0], o);
   }
+  /* -h, --help and any other option in place of the file */
+  if (argc < 2 || argv[1][0] == '-') return usage();
   if (argc == 2 || (argc == 3 && strcmp(argv[2], "-O") == 0)) {
+    if (!source_readable(argv[1])) return 1;
     int r = compile_to_module(argv[1], argc == 3, true, false);
     if (r == 0) alan_module()->print(llvm::outs(), nullptr);
     return r;

@@ -1,0 +1,7 @@
+-- Used by run_cli.py: it prints a line and then waits for input.
+main () : proc
+  x : int;
+{
+  writeString("waiting\n");
+  x = readInteger();
+}

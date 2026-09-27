@@ -153,7 +153,9 @@ That runtime lives in a NASM section called `.code`, which is not marked executa
 
 ## Notes and known limitations
 
-- `Examples/papariatest.alan` has statements after a `return`. The compiler skips them, so the program compiles and runs with and without `-O`.
+- `Examples/papariatest.alan` is a scratch test with dead code after a `return`. It calls an int function as a statement, which the spec does not allow, so the compiler rejects it.
+- String literals are more lenient than the letter of the spec. They may hold any byte except `"`, `\`, the end of the line and NUL, such as tabs and UTF-8 text. Character constants are strict: one printable ASCII character other than `'`, `"` and `\`, or an escape sequence.
+- Statements, expressions and functions may nest at most 3000 levels deep. Deeper programs give "Nesting is too deep".
 - `Examples/test2` is a test file for semantic errors. The compiler rejects it with an error message.
 - The expected outputs in `tests/expected/` were recorded with the older pipeline. CI compares the new compiler and runtime against them. The results were not checked against the original assignment answers.
 - The first program on a machine takes a minute or two longer to link, because Zig builds its C library for the target once.

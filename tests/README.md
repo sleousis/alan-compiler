@@ -25,8 +25,32 @@ bash tests/record_legacy.sh
 The legacy runtime reads input with raw `read()` calls.
 The recording script feeds input one line at a time with a short pause for that reason.
 
+## Regression cases
+
+The cases in `regress/` check bugs that were fixed.
+Their expected output is written by hand, and the recording script skips them.
+The `rt-` cases cover the runtime library.
+`rt-wait.alan` is not a case. `run_cli.py` uses it.
+
+## Command line
+
+`run_cli.py` checks the usage message, sources that cannot be opened, and that Ctrl-C during `alanc run` leaves no temporary files:
+
+```
+python tests/run_cli.py --alanc <path-to-alanc>
+```
+
+## Runtime library
+
+`run_rt_test.py` builds `runtime/test/rt_test.c` with the runtime and zig (`ALAN_ZIG` or `--zig`) and compares its output with `rt_test_expected.txt`:
+
+```
+python tests/run_rt_test.py
+```
+
 ## Untested examples
 
 - `prog11` is not a case. It answered "no" to every magic square tried, so its expected behaviour is unknown.
 - `test2` is not a case. It calls a function with too few arguments and does not compile.
+- `papariatest` is not a case. It was a scratch test with dead code after a `return`, and it calls an int function as a statement, which the spec does not allow. It is an error test in `errors/expected.json`.
 - `test` is not a case. It reads the local `y` before setting it, so its output is undefined and can differ between platforms and runtimes.

@@ -19,4 +19,8 @@ int32_t alan_strcmp(const char *a, const char *b);
 void    alan_strcpy(char *dst, const char *src);
 void    alan_strcat(char *dst, const char *src);
 
+/* For the runtime itself: reads a whole line, keeps its first size-1 bytes
+   in buf and drops the rest. size must be at least 1. */
+void    alan_rt_readLine(int32_t size, char *buf);
+
 #endif

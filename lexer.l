@@ -70,12 +70,12 @@ T [^"\\\n\0]
 
 \"({T}|{E})*\"		{ yylval.c = strdup(yytext); return T_string; }
  /* The longest match picks one of these when a string goes wrong. On a
-    tie the first one wins, so "a\" is reported as not closed. */
+    tie the first one wins, so "a\" is reported as not closed. A backslash
+    at the end of the line (before CR LF too) is not closed either. */
 \"({T}|{E})*		{ yyerror("String literal not closed on this line"); }
-\"({T}|{E})*\\[^\n]?	{
+\"({T}|{E})*\\[^\r\n]	{
   std::string msg = std::string("Invalid escape sequence \\") +
-                    (yytext[yyleng - 1] == '\\' ? "" : yytext + yyleng - 1) +
-                    " in string literal";
+                    (yytext + yyleng - 1) + " in string literal";
   yyerror(msg.c_str());
 }
 \"({T}|{E})*\0		{ yyerror("NUL character in string literal"); }
