@@ -37,6 +37,10 @@ alanc check hello.alan               check the program for errors only
 
 Add `-O` to `run` or `build` to turn on optimization. The first program takes a minute or two longer, because Zig prepares its C library once.
 
+## Editor support
+
+The Alan extension for Visual Studio Code adds highlighting, live errors, completion, formatting, rename, one-click Run and debugging with breakpoints. It installs the compiler for you on first use. Get it from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=sleousis.alan) or [Open VSX](https://open-vsx.org/extension/sleousis/alan), or download the `.vsix` from the [Releases page](https://github.com/sleousis/alan-compiler/releases) (tags starting with `vscode-v`) and install it with **Extensions: Install from VSIX...**. The extension lives in [`vscode/`](vscode) and its [README](vscode/README.md) lists its commands and settings.
+
 ## Download
 
 The [Releases page](https://github.com/sleousis/alan-compiler/releases) has a self-contained bundle for each system, if you prefer to install by hand:
@@ -85,6 +89,7 @@ The project was first written for an older LLVM with typed pointers (it built wi
 | `alan_lib_v2/` | runtime library sources and the prebuilt `lib.a` (see its `README.txt`) |
 | `Examples/` | sample programs (`test` and `test2` are Alan sources without the `.alan` extension) |
 | `alan2018.pdf` | Alan language specification |
+| `vscode/` | the Visual Studio Code extension |
 
 ## Prerequisites
 
@@ -188,7 +193,7 @@ Sorted array: 6, 6, 7, 8, 9, 35, 36, 38, 49, 49, 51, 67, 78, 78, 79, 80
 - The runtime library uses absolute addresses, so it cannot be linked into a position independent executable. Current clang builds PIE by default, so the scripts also pass `-no-pie`.
 - NASM 3.02 warns "implicit DEFAULT ABS is deprecated" for some runtime files. The warning is harmless. The rebuilt `lib.a` has exactly the same machine code as the committed one.
 - The runtime input functions read from standard input with raw system calls. When the input comes from a pipe or a file, one read can take several lines at once and the next read call misses them. Type the input interactively, or send it one line at a time.
-- `Examples/papariatest.alan` has statements after a `return`. Without `-O` the generated IR is rejected by `llc`. With `-O` it compiles and runs.
+- `Examples/papariatest.alan` has statements after a `return`. The compiler skips them, so the program compiles and runs with and without `-O`.
 - `Examples/test2` is a test file for semantic errors. The compiler rejects it with an error message.
 - All example programs were compiled and run with LLVM 23, with and without `-O`. Given the same input, their output matched the LLVM 10 build exactly. The results were not checked against the original assignment answers.
 - The shell scripts must have Unix (LF) line endings. `.gitattributes` makes sure of this on Windows checkouts.

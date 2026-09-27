@@ -52,6 +52,9 @@ if (!listed.stdout?.toLowerCase().split(/\r?\n/).includes(CODELLDB)) {
   });
 }
 
+// A fresh profile each time, so no window or editor from an earlier run comes back.
+fs.rmSync(path.join(root, ".vscode-test", "user-data"), { recursive: true, force: true });
+
 try {
   await runTests({
     vscodeExecutablePath,

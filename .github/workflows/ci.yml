@@ -484,3 +484,58 @@ jobs:
           compression-level: 0
           # a release keeps its bundles for 90 days, a plain CI run for 7
           retention-days: ${{ inputs.version && 90 || 7 }}
+
+  vscode:
+    name: vscode (${{ matrix.os }})
+    # A compiler release (release.yml) calls this workflow with a version and
+    # does not need the extension, which vscode-release.yml releases.
+    if: ${{ !inputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: vscode
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+
+      # The end-to-end tests download VS Code and CodeLLDB into .vscode-test.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            vscode/.vscode-test/vscode-*
+            vscode/.vscode-test/extensions
+          key: vscode-test-${{ runner.os }}-${{ hashFiles('vscode/package-lock.json') }}
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:grammar
+
+      - name: End-to-end tests
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a npm run test:e2e
+          else
+            npm run test:e2e
+          fi
+
+      - name: Package
+        run: npx vsce package --out alan.vsix
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alan-vscode-${{ matrix.os }}
+          path: vscode/alan.vsix
+          if-no-files-found: error
+          retention-days: 7

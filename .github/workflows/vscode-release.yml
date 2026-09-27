@@ -1,0 +1,104 @@
+name: VS Code extension release
+
+on:
+  push:
+    # extension tags only, such as vscode-v1.0.0
+    tags: ["vscode-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+
+      - name: Check the tag against package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "package.json has $version, the tag is $GITHUB_REF_NAME"
+          case "$GITHUB_REF_NAME" in
+            vscode-v"$version") ;;
+            # test tags such as vscode-v0.0.0-test1 release whatever package.json holds
+            vscode-v0.0.0-*) echo "::notice::Test tag, the version check is skipped." ;;
+            *) echo "::error::Tag $GITHUB_REF_NAME does not match version $version in vscode/package.json."; exit 1 ;;
+          esac
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:grammar
+      - name: End-to-end tests
+        run: xvfb-run -a npm run test:e2e
+
+      - name: Package
+        run: |
+          npx vsce package --out "alan-$GITHUB_REF_NAME.vsix"
+          ls -l *.vsix
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: vscode/alan-${{ github.ref_name }}.vsix
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            Alan extension for Visual Studio Code, from tag ${{ github.ref_name }}.
+            Install the `.vsix` with **Extensions: Install from VSIX...** in VS Code, or run `code --install-extension alan-${{ github.ref_name }}.vsix`.
+            The extension installs the Alan compiler on first use. See vscode/CHANGELOG.md for what changed.
+
+      # Publishing needs a token for each store and a package.json without
+      # "private": true. Anything missing skips that step with a warning.
+      - name: Decide what to publish
+        id: publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          marketplace=true
+          openvsx=true
+          if [ "$(node -p "require('./package.json').private === true")" = true ]; then
+            echo "::warning::vscode/package.json is private, publishing to the Marketplace and Open VSX skipped."
+            marketplace=false
+            openvsx=false
+          fi
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::warning::VSCE_PAT secret missing, publishing to the VS Code Marketplace skipped."
+            marketplace=false
+          fi
+          if [ -z "$OVSX_PAT" ]; then
+            echo "::warning::OVSX_PAT secret missing, publishing to Open VSX skipped."
+            openvsx=false
+          fi
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            echo "::notice::Prerelease tag, publishing to the Marketplace and Open VSX skipped."
+            marketplace=false
+            openvsx=false
+          fi
+          echo "marketplace=$marketplace" >> "$GITHUB_OUTPUT"
+          echo "openvsx=$openvsx" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to VS Code Marketplace
+        if: steps.publish.outputs.marketplace == 'true'
+        run: npx vsce publish --packagePath "alan-$GITHUB_REF_NAME.vsix"
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX
+        if: steps.publish.outputs.openvsx == 'true'
+        run: npx --yes ovsx@1 publish "alan-$GITHUB_REF_NAME.vsix" -p "$OVSX_PAT"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
