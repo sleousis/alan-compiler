@@ -56,6 +56,11 @@ Compile errors from Run and Build show in the Problems panel.
 
 The extension is the default formatter for Alan files. Turn on `editor.formatOnSave` to format on every save.
 
+## Known differences from the compiler
+
+- A syntax error has a message that names what was expected, where the compiler says only "syntax error". A missing `;` is marked at the end of the line before it, where the compiler gives the line after.
+- A string with a non-ASCII character after a backslash, such as `"\é"`, gives "Invalid escape sequence \é in string literal". The compiler prints only the first byte of the character there, which does not show as text.
+
 ## Links
 
 - [Source code, issues and compiler releases](https://github.com/sleousis/alan-compiler)
