@@ -1,7 +1,7 @@
 {
   "name": "alan",
   "displayName": "Alan",
-  "description": "Alan language support: highlighting, live errors, completion and one-click run.",
+  "description": "Alan language support: highlighting, live errors, completion, one-click run and debugging.",
   "version": "1.0.0",
   "publisher": "sleousis",
   "private": true,
@@ -17,11 +17,17 @@
   "categories": [
     "Programming Languages",
     "Linters",
-    "Snippets"
+    "Snippets",
+    "Debuggers"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onTaskType:alan"
+    "onTaskType:alan",
+    "onDebugResolve:alan",
+    "onDebugDynamicConfigurations:alan"
+  ],
+  "extensionDependencies": [
+    "vadimcn.vscode-lldb"
   ],
   "contributes": {
     "languages": [
@@ -47,6 +53,42 @@
       {
         "language": "alan",
         "path": "./snippets/alan.json"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "alan"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "alan",
+        "label": "Alan",
+        "languages": [
+          "alan"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The .alan file to debug.",
+                "default": "${file}"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "alan",
+            "request": "launch",
+            "name": "Debug Alan file",
+            "program": "${file}"
+          }
+        ]
       }
     ],
     "commands": [

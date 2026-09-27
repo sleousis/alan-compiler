@@ -61,12 +61,14 @@ export function failureSummary(stderr: string): string | undefined {
 }
 
 export function commandLine(
-  c: CompilerRef, verb: Verb, file: string, opts: { optimize: boolean; out?: string },
+  c: CompilerRef, verb: Verb, file: string, opts: { optimize: boolean; out?: string; debug?: boolean },
 ): { cmd: string; args: string[] } {
   const p = c.wsl ? toWslPath : (s: string) => s;
   const args = verb === "ir" ? [p(file)] : [verb, p(file)];
   if (verb === "build" && opts.out) args.push("-o", p(opts.out));
-  if (verb !== "check" && opts.optimize) args.push("-O");
+  // -g turns -O off in the compiler, so a debug build never asks for both.
+  if ((verb === "build" || verb === "run") && opts.debug) args.push("-g");
+  else if (verb !== "check" && opts.optimize) args.push("-O");
   if (c.wsl) return { cmd: "wsl.exe", args: ["-e", "sh", "-c", WSL_LAUNCH, c.exe, ...args] };
   return { cmd: c.exe, args };
 }

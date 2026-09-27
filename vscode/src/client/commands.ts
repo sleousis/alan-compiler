@@ -125,7 +125,7 @@ async function documentFor(uri: vscode.Uri): Promise<vscode.TextDocument | undef
  * An untitled document or one without a file on disk goes through Save As,
  * and undefined means the user cancelled or saving failed.
  */
-async function savedDocument(arg: unknown): Promise<vscode.TextDocument | undefined> {
+export async function savedDocument(arg: unknown): Promise<vscode.TextDocument | undefined> {
   const doc = arg instanceof vscode.Uri ? await documentFor(arg) : vscode.window.activeTextEditor?.document;
   if (!doc && arg instanceof vscode.Uri) {
     void vscode.window.showWarningMessage(`Cannot open ${arg.fsPath}.`);
@@ -163,7 +163,7 @@ async function prepare(host: Host, arg: unknown): Promise<{ doc: vscode.TextDocu
  * or a failed compile, and logs it with the compiler's output to the Alan
  * output channel.
  */
-function reportFailure(host: Host, what: string, detail: string | undefined, missing: boolean, stderr = ""): void {
+export function reportFailure(host: Host, what: string, detail: string | undefined, missing: boolean, stderr = ""): void {
   host.output.appendLine(`${what} failed: ${missing ? "compiler not found" : detail ?? "no details"}`);
   if (stderr.trim()) host.output.appendLine(stripAnsi(stderr).trimEnd());
   if (missing) {
@@ -311,7 +311,7 @@ function taskProvider(host: Host): vscode.TaskProvider {
 /** True while an install or removal runs, so two never overlap. */
 let busy = false;
 
-function useWsl(): boolean {
+export function useWsl(): boolean {
   return process.platform === "win32" && vscode.workspace.getConfiguration("alan").get<boolean>("useWsl", false);
 }
 
