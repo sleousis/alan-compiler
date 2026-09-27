@@ -1,7 +1,7 @@
 import { strict as assert } from "assert";
 import * as fs from "fs";
 import * as path from "path";
-import { references, prepareRename, rename, symbolAt } from "../../src/server/rename";
+import { nameUnder, references, prepareRename, rename } from "../../src/server/rename";
 import { analyzeSource } from "../../src/server/analysis";
 import { Pos, Range } from "../../src/server/lexer";
 import { Scope, Sym } from "../../src/server/scopes";
@@ -64,7 +64,7 @@ describe("rename", () => {
     assert.deepEqual(r.map(x => [x.start.line, x.start.character]), [[2, 1], [7, 1]]);
   });
   it("gives the name range under the cursor", () => {
-    const s = symbolAt(src, { line: 6, character: 1 })!;
+    const s = nameUnder(src, { line: 6, character: 1 })!;
     assert.equal(s.sym.name, "x");
     assert.deepEqual(s.range, { start: { line: 6, character: 1 }, end: { line: 6, character: 2 } });
   });
@@ -130,6 +130,42 @@ describe("rename", () => {
     const s = "m () : proc\n a : int[3];\n i : int;\n{ i = 0; a[i] = a[i] + i; }";
     assert.equal(edited(s, { line: 2, character: 1 }, "index"),
       "m () : proc\n a : int[3];\n index : int;\n{ index = 0; a[index] = a[index] + index; }");
+  });
+  it("renames a function called from a nested function", () => {
+    const s = "m () : proc\n f () : proc { }\n g () : proc\n { f(); }\n{ f(); g(); }";
+    assert.equal(edited(s, { line: 1, character: 1 }, "h"),
+      "m () : proc\n h () : proc { }\n g () : proc\n { h(); }\n{ h(); g(); }");
+    assert.match((rename(s, { line: 3, character: 3 }, "g") as any).error, /clash/);
+  });
+  it("renames a nested parameter that shadows an outer variable of the same name", () => {
+    const s = "m () : proc\n x : int;\n g (x : int) : proc { x = 1; }\n{ x = 2; g(x); }";
+    assert.equal(edited(s, { line: 2, character: 4 }, "y"),
+      "m () : proc\n x : int;\n g (y : int) : proc { y = 1; }\n{ x = 2; g(x); }");
+    assert.equal(edited(s, { line: 3, character: 2 }, "y"),
+      "m () : proc\n y : int;\n g (x : int) : proc { x = 1; }\n{ y = 2; g(y); }");
+  });
+  it("renames 30,000 uses in a 5,000 line file quickly", () => {
+    const lines = ["m () : proc", " x : int;", " y : int;", "{"];
+    for (let i = 0; i < 5000; i++) lines.push(" x = x + y; x = x + y; x = x + y;");
+    lines.push("}");
+    const big = lines.join("\n");
+    // The fastest of 5 runs, so a busy machine does not fail the test.
+    const fastest = (newName: string) => {
+      let ms = Infinity;
+      for (let i = 0; i < 5; i++) {
+        const t0 = process.hrtime.bigint();
+        rename(big, { line: 1, character: 1 }, newName);
+        ms = Math.min(ms, Number(process.hrtime.bigint() - t0) / 1e6);
+      }
+      return ms;
+    };
+    const r = rename(big, { line: 1, character: 1 }, "total");
+    assert.ok("edits" in r && r.edits.length === 30001);
+    const accepted = fastest("total");
+    assert.ok(accepted < 1000, `took ${accepted.toFixed(1)} ms`);
+    assert.ok("error" in rename(big, { line: 1, character: 1 }, "m"));
+    const refused = fastest("m");
+    assert.ok(refused < 1000, `took ${refused.toFixed(1)} ms`);
   });
   it("returns no edits for the same name", () => {
     assert.deepEqual(rename(src, { line: 6, character: 1 }, "x"), { edits: [] });

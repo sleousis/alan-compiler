@@ -24,7 +24,7 @@ function cleanAnalysis(src: string): Analysis | { error: string } {
 }
 
 /** The symbol named at a position and the range of the name there. Unknown names have none. */
-export function symbolAt(src: string, pos: Pos): { sym: Sym; range: Range } | undefined {
+export function nameUnder(src: string, pos: Pos): { sym: Sym; range: Range } | undefined {
   const analysis = analyzeSource(src).analysis;
   const found = analysis && nameAt(analysis, pos);
   return found?.sym ? { sym: found.sym, range: found.range } : undefined;
@@ -70,15 +70,19 @@ export function rename(src: string, pos: Pos, newName: string): { edits: Edit[] 
   return problem ? { error: problem } : { edits };
 }
 
+/** The text with the edits applied, in one pass over the edits in source order. */
 function applyEdits(src: string, edits: Edit[]): string {
   const lineStarts = [0];
   for (let i = 0; i < src.length; i++) if (src[i] === "\n") lineStarts.push(i + 1);
   const offset = (p: Pos) => lineStarts[p.line] + p.character;
-  let out = src;
-  for (const e of [...edits].sort((a, b) => comparePos(b.range.start, a.range.start))) {
-    out = out.slice(0, offset(e.range.start)) + e.newText + out.slice(offset(e.range.end));
+  const pieces: string[] = [];
+  let done = 0;
+  for (const e of [...edits].sort((x, y) => comparePos(x.range.start, y.range.start))) {
+    pieces.push(src.slice(done, offset(e.range.start)), e.newText);
+    done = offset(e.range.end);
   }
-  return out;
+  pieces.push(src.slice(done));
+  return pieces.join("");
 }
 
 /**
@@ -86,13 +90,19 @@ function applyEdits(src: string, edits: Edit[]): string {
  * name on one line, so only later positions on the same line move.
  */
 function mapper(edits: Edit[]): (p: Pos) => Pos {
+  const byLine = new Map<number, { end: number; delta: number }[]>();
+  for (const e of edits) {
+    const r = e.range;
+    const shifts = byLine.get(r.start.line) ?? [];
+    shifts.push({ end: r.end.character, delta: e.newText.length - (r.end.character - r.start.character) });
+    byLine.set(r.start.line, shifts);
+  }
+  for (const shifts of byLine.values()) shifts.sort((x, y) => x.end - y.end);
   return (p) => {
     let character = p.character;
-    for (const e of edits) {
-      const r = e.range;
-      if (r.start.line === p.line && r.end.character <= p.character) {
-        character += e.newText.length - (r.end.character - r.start.character);
-      }
+    for (const s of byLine.get(p.line) ?? []) {
+      if (s.end > p.character) break;
+      character += s.delta;
     }
     return { line: p.line, character };
   };
