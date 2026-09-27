@@ -1,4 +1,6 @@
 import { strict as assert } from "assert";
+import { readdirSync, readFileSync } from "fs";
+import * as path from "path";
 import { lex } from "../../src/server/lexer";
 
 const kinds = (src: string) => lex(src).tokens.map((t) => t.kind);
@@ -105,6 +107,33 @@ describe("lexer", () => {
     assert.equal(r.errors.length, 2);
     assert.equal(r.errors[0].message, "Illegal character");
     assert.deepEqual(r.errors[0].range, { start: { line: 0, character: 2 }, end: { line: 0, character: 3 } });
+  });
+
+  it("gives the same tokens and errors for CRLF as for LF at line ends", () => {
+    for (const lf of ['x "abc\ny', "x 'a\ny", "x '\\q\ny", 'x "ab\\\ny', "x 'ab\\\ny", "x -- note\ny"]) {
+      assert.deepEqual(lex(lf.replace(/\n/g, "\r\n")), lex(lf), JSON.stringify(lf));
+    }
+    const r = lex('x "abc\r\ny');
+    assert.equal(r.tokens[1].text, '"abc');
+    assert.deepEqual(r.errors[0].range.end, { line: 0, character: 6 });
+  });
+
+  it("lexes every repo .alan file the same as LF and as CRLF", () => {
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.name.endsWith(".alan")) files.push(p);
+      }
+    };
+    walk(path.join(__dirname, "..", "..", ".."));
+    assert.ok(files.length > 0);
+    for (const f of files) {
+      const lf = readFileSync(f, "utf8").replace(/\r\n/g, "\n");
+      assert.deepEqual(lex(lf.replace(/\n/g, "\r\n")), lex(lf), f);
+    }
   });
 
   it("gives token ranges and an eof token at the end", () => {

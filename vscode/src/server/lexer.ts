@@ -81,10 +81,14 @@ export function lex(src: string): { tokens: Token[]; errors: LexError[] } {
     errors.push({ message, range: token.range });
   };
 
-  /** Index of the next "\n" at or after `from`, or the end of the source. */
+  /**
+   * Index where the line holding `from` ends: the next "\n", or the "\r" of a
+   * "\r\n", or the end of the source. CRLF and LF files then give the same tokens.
+   */
   const lineEnd = (from: number) => {
     const nl = src.indexOf("\n", from);
-    return nl < 0 ? src.length : nl;
+    if (nl < 0) return src.length;
+    return nl > from && src[nl - 1] === "\r" ? nl - 1 : nl;
   };
 
   /**
@@ -140,12 +144,11 @@ export function lex(src: string): { tokens: Token[]; errors: LexError[] } {
 
     if (c === '"') {
       // lexer.l: \"(\\.|[^"\\])*\" but the editor ends a string at the line end.
+      const end = lineEnd(i);
       let j = i + 1;
-      while (j < src.length && src[j] !== '"' && src[j] !== "\n") {
-        j += src[j] === "\\" && src[j + 1] !== undefined && src[j + 1] !== "\n" ? 2 : 1;
-      }
-      if (src[j] === '"') emit("string", j + 1 - i);
-      else emitBad(j - i, "Unterminated string");
+      while (j < end && src[j] !== '"') j += src[j] === "\\" && j + 1 < end ? 2 : 1;
+      if (j < end) emit("string", j + 1 - i);
+      else emitBad(end - i, "Unterminated string");
       continue;
     }
 
@@ -155,7 +158,7 @@ export function lex(src: string): { tokens: Token[]; errors: LexError[] } {
       // Not a valid literal: take up to the next quote on this line as one bad token.
       const end = lineEnd(i);
       let j = i + 1;
-      while (j < end && src[j] !== "'") j += src[j] === "\\" ? 2 : 1;
+      while (j < end && src[j] !== "'") j += src[j] === "\\" && j + 1 < end ? 2 : 1;
       if (j < end) emitBad(j + 1 - i, "Illegal character literal");
       else emitBad(end - i, "Unterminated character literal");
       continue;
