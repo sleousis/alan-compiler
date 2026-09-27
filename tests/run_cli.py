@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Checks how alanc treats its command line, unreadable sources and Ctrl-C."""
-import argparse, os, pathlib, re, signal, subprocess, sys, tempfile, time
+import argparse, os, pathlib, re, signal, subprocess, sys, tempfile, threading, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -38,10 +38,35 @@ def expect_cannot_open(exe: str, args, path: str, reason: str) -> None:
            "cannot open for alanc " + " ".join(args), f"exit {code}, stderr: {err!r}")
 
 
-def check_interrupt(exe: str, work: pathlib.Path) -> None:
-    """Ctrl-C while `alanc run` waits for its program must leave no
-    temporary file behind."""
-    tmp = work / "tmp"
+def kill_all(p: subprocess.Popen) -> None:
+    """Ends alanc and the program it runs."""
+    if WINDOWS:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)],
+                       capture_output=True)
+    else:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    p.wait()
+
+
+def read_line(p: subprocess.Popen, seconds: float) -> bytes:
+    """The first line the program prints, or b"" when none comes in time."""
+    box = []
+    t = threading.Thread(target=lambda: box.append(p.stdout.readline()), daemon=True)
+    t.start()
+    t.join(seconds)
+    return box[0] if box else b""
+
+
+def check_interrupt(exe: str, work: pathlib.Path, group: bool) -> None:
+    """Ctrl-C while `alanc run` waits for its program must end both and
+    leave no temporary file behind. With group, the signal goes to alanc and
+    the program as from a terminal, otherwise to alanc alone, which passes
+    it on."""
+    what = "Ctrl-C during alanc run" + ("" if group else ", sent to alanc alone")
+    tmp = work / ("tmp-group" if group else "tmp-alanc")
     tmp.mkdir()
     env = dict(os.environ, TMPDIR=str(tmp), TMP=str(tmp), TEMP=str(tmp))
     src = ROOT / "tests/regress/rt-wait.alan"
@@ -50,21 +75,22 @@ def check_interrupt(exe: str, work: pathlib.Path) -> None:
     p = subprocess.Popen([exe, "run", str(src)], stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, **kw)
     # The program prints a line and then waits for input.
-    line = p.stdout.readline()
+    line = read_line(p, 300)
     if line.strip() != b"waiting":
-        p.kill()
-        report(False, "Ctrl-C during alanc run", f"program printed {line!r}")
+        kill_all(p)
+        report(False, what, f"program printed {line!r}")
         return
     if WINDOWS:
         os.kill(p.pid, signal.CTRL_BREAK_EVENT)
-    else:
+    elif group:
         os.killpg(p.pid, signal.SIGINT)
+    else:
+        os.kill(p.pid, signal.SIGINT)
     try:
         p.wait(timeout=60)
     except subprocess.TimeoutExpired:
-        p.kill()
-        p.wait()
-        report(False, "Ctrl-C during alanc run", "alanc did not end")
+        kill_all(p)
+        report(False, what, "alanc did not end")
         return
     # Removing a file on Windows can lag behind the handle being closed.
     for _ in range(50):
@@ -73,7 +99,7 @@ def check_interrupt(exe: str, work: pathlib.Path) -> None:
             break
         time.sleep(0.1)
     err = p.stderr.read().decode("utf-8", "replace")
-    report(p.returncode == 130 and not left, "Ctrl-C during alanc run",
+    report(p.returncode == 130 and not left, what,
            f"exit {p.returncode}, files left: {left}, stderr: {err!r}")
 
 
@@ -108,7 +134,10 @@ def main() -> int:
             locked.chmod(0)
             expect_cannot_open(exe, ["check", str(locked)], str(locked), "permission denied")
 
-        check_interrupt(exe, work)
+        check_interrupt(exe, work, group=True)
+        # Windows cannot send Ctrl-C to one process of a group.
+        if not WINDOWS:
+            check_interrupt(exe, work, group=False)
 
     return 1 if failed else 0
 

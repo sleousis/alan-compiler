@@ -2,11 +2,13 @@
 #include "debuginfo.hpp"
 #include "emit.hpp"
 #include "error.hpp"
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Module.h"
@@ -77,9 +79,10 @@ static void cli_error(const char *where, const std::string &msg) {
 /* Exit status of alanc after Ctrl-C, as a shell gives for SIGINT. */
 static const int kInterruptedExit = 130;
 
-/* While a child process runs, Ctrl-C reaches the child and alanc only notes
-   it, so alanc lives on to remove its temporary files. A handler that
-   catches a signal is reset in the child, so the child still stops. */
+/* While a child process runs, Ctrl-C only sets a flag in alanc, so alanc
+   lives on to stop the child and remove its temporary files. A handler
+   that catches a signal is reset in the child, so the child still stops on
+   a Ctrl-C from the terminal. */
 class InterruptGuard {
  public:
   InterruptGuard() {
@@ -120,14 +123,71 @@ class InterruptGuard {
 };
 volatile std::sig_atomic_t InterruptGuard::interrupted_ = 0;
 
-/* Runs a program and waits for it. interrupted tells whether Ctrl-C came
-   while it ran. */
+#ifdef _WIN32
+/* The exit code of a Windows program that Ctrl-C stopped. */
+static const DWORD kControlCExit = 0xC000013AUL;
+#endif
+
+/* Stops a child after a Ctrl-C that alanc got. hard makes sure it ends. */
+static void stop_child(const llvm::sys::ProcessInfo &pi, bool hard) {
+#ifdef _WIN32
+  /* Windows cannot send Ctrl-C to one process, so the child ends as if
+     Ctrl-C had stopped it. */
+  (void)hard;
+  TerminateProcess(pi.Process, kControlCExit);
+#else
+  kill(pi.Pid, hard ? SIGKILL : SIGINT);
+#endif
+}
+
+/* True when a child with this result ended because of Ctrl-C. A child
+   that alanc stopped counts too, unless it still exited normally. */
+static bool ended_by_interrupt(int rc, const std::string &err, bool stopped) {
+#ifdef _WIN32
+  (void)err;
+  (void)stopped;
+  return rc == static_cast<int>(kControlCExit);
+#else
+  /* -2 means the child ended from a signal, and err names the signal as
+     strsignal gives it. */
+  if (rc != -2) return false;
+  return stopped || err == strsignal(SIGINT);
+#endif
+}
+
+/* Runs a program and waits for it. A Ctrl-C that alanc gets meanwhile is
+   passed on to the program. interrupted tells whether the program ended
+   because of Ctrl-C. The result is as for ExecuteAndWait. */
 static int run_child(llvm::StringRef program, llvm::ArrayRef<llvm::StringRef> args,
                      std::string &err, bool &interrupted) {
+  using namespace std::chrono;
+  interrupted = false;
   InterruptGuard guard;
-  int rc = llvm::sys::ExecuteAndWait(program, args, std::nullopt, {}, 0, 0, &err);
-  interrupted = InterruptGuard::interrupted();
-  return rc;
+  bool failed = false;
+  llvm::sys::ProcessInfo pi =
+      llvm::sys::ExecuteNoWait(program, args, std::nullopt, {}, 0, &err, &failed);
+  if (failed || pi.Pid == llvm::sys::ProcessInfo::InvalidPid) return -1;
+  bool stopped = false, killed = false;
+  steady_clock::time_point stoppedAt;
+  llvm::sys::ProcessInfo result;
+  for (;;) {
+    /* Polling: returns at once and never kills the child. */
+    result = llvm::sys::Wait(pi, 0, &err, nullptr, /*Polling*/ true);
+    if (result.Pid != llvm::sys::ProcessInfo::InvalidPid) break;
+    if (InterruptGuard::interrupted()) {
+      if (!stopped) {
+        stop_child(pi, false);
+        stopped = true;
+        stoppedAt = steady_clock::now();
+      } else if (!killed && steady_clock::now() - stoppedAt > seconds(2)) {
+        stop_child(pi, true);
+        killed = true;
+      }
+    }
+    std::this_thread::sleep_for(milliseconds(20));
+  }
+  interrupted = ended_by_interrupt(result.ReturnCode, err, stopped);
+  return result.ReturnCode;
 }
 
 /* A temporary file is also removed when a signal stops alanc. */

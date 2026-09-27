@@ -35,6 +35,14 @@ The `rt-` cases cover the runtime library.
 python tests/run_cli.py --alanc <path-to-alanc>
 ```
 
+## Runtime library
+
+`run_rt_test.py` builds `runtime/test/rt_test.c` with the runtime and zig (`ALAN_ZIG` or `--zig`) and compares its output with `rt_test_expected.txt`:
+
+```
+python tests/run_rt_test.py
+```
+
 ## Untested examples
 
 - `prog11` is not a case. It answered "no" to every magic square tried, so its expected behaviour is unknown.
