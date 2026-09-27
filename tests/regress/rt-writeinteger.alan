@@ -1,0 +1,14 @@
+-- writeInteger prints values past 16 bits in full
+main () : proc
+  x : int;
+{
+  x = 200 * 200;
+  if (x > 32767) writeString("x is greater than 32767, x = ");
+  else writeString("x is at most 32767, x = ");
+  writeInteger(x);
+  writeString("\n");
+  writeInteger(x / 2);
+  writeString("\n");
+  writeInteger(-x * 1000);
+  writeString("\n");
+}

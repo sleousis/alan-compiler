@@ -1,0 +1,16 @@
+-- readInteger gives negative numbers and reads its whole line
+main () : proc
+  x : int;
+  y : int;
+{
+  x = readInteger();
+  if (x < 0) writeString("negative\n"); else writeString("not negative\n");
+  writeInteger(x); writeString("\n");
+  writeInteger(x / 2); writeString("\n");
+  if (x == -5) writeString("equal -5\n"); else writeString("not equal -5\n");
+  x = readInteger();
+  y = readInteger();
+  writeInteger(x); writeString(" "); writeInteger(y); writeString("\n");
+  x = readInteger();
+  writeInteger(x); writeString("\n");
+}

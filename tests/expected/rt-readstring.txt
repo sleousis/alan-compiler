@@ -1,0 +1,4 @@
+s=[abc] t=[def]
+s=[ab] t=[XY]
+s=[abc] t=[last]
+2 2
