@@ -387,6 +387,11 @@ jobs:
           test "$version" = "alanc $VERSION"
           "$alanc" run Examples/HelloWorld.alan > "$smoke/out.txt"
           tr -d '\r' < "$smoke/out.txt" | cmp - tests/expected/HelloWorld.txt
+          # A plain CI run packages "dev", which is also the built-in version,
+          # so another VERSION file shows that alanc reads it.
+          printf 'v0.0.0-file\n' > "$smoke/alan/VERSION"
+          version=$("$alanc" --version | tr -d '\r')
+          test "$version" = "alanc v0.0.0-file"
 
       # The bundle must also work from a folder with Greek letters, with no
       # ALAN_ZIG, ALAN_RUNTIME or ZIG_GLOBAL_CACHE_DIR, so alanc finds zig and
