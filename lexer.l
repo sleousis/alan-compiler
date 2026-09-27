@@ -1,4 +1,5 @@
 %{
+#include <string>
 #include "ast.hpp"
 #include "parser.hpp"
 #define T_eof 0
@@ -69,7 +70,20 @@ S [!|&<>()\[\]{},:+\-*%/;]
 "\'"({L}|{D}|{S}|" "|"\\n"|"\\t"|"\\r"|"\\0"|"\\\\"|"\\\'"|"\\\""|"\\x"[0-9a-fA-F]{2})"\'" { yylval.c = strdup(yytext); return T_char; }
 
 {L}({L}|{D}|_)*     { yylval.c = strdup(yytext); return T_id; }
-{D}+     	 		{ yylval.n = atoi(yytext); return T_const; }
+{D}+     	 		{
+  /* int is 32 bits, so a constant must be at most 2147483647. */
+  long long value = 0;
+  for (const char *p = yytext; *p != '\0'; p++) {
+    value = value * 10 + (*p - '0');
+    if (value > 2147483647LL) {
+      std::string msg = std::string("Integer constant ") + yytext +
+                        " is out of range (0 to 2147483647)";
+      yyerror(msg.c_str());
+    }
+  }
+  yylval.n = (int) value;
+  return T_const;
+}
 
 {W}+     			{ /* nothing */ }
 \n       			{ ++lineno; }

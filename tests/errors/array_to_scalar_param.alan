@@ -1,0 +1,6 @@
+-- A type mismatch names the parameter (F09).
+main () : proc
+  a : int[5];
+{
+  writeInteger(a);
+}

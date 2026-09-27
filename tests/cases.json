@@ -360,5 +360,33 @@
     "input": null,
     "opt": true,
     "expected": "regress/shadowing.txt"
+  },
+  {
+    "name": "int_max_constant",
+    "file": "tests/regress/int_max_constant.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/int_max_constant.txt"
+  },
+  {
+    "name": "int_max_constant",
+    "file": "tests/regress/int_max_constant.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/int_max_constant.txt"
+  },
+  {
+    "name": "reference_arguments",
+    "file": "tests/regress/reference_arguments.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/reference_arguments.txt"
+  },
+  {
+    "name": "reference_arguments",
+    "file": "tests/regress/reference_arguments.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/reference_arguments.txt"
   }
 ]

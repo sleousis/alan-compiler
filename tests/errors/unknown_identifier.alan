@@ -1,0 +1,7 @@
+-- The error names the unknown identifier (F16).
+main () : proc
+  x : int;
+{
+  x = 1;
+  y = 2;
+}

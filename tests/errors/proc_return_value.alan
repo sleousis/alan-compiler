@@ -1,0 +1,10 @@
+-- A proc returns no value, not even another proc's.
+main () : proc
+  p () : proc { }
+  q () : proc
+  {
+    return p();
+  }
+{
+  q();
+}

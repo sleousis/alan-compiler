@@ -1,0 +1,9 @@
+-- A reference parameter needs an l-value, not an expression (I3).
+main () : proc
+  p (x : reference int, y : int) : proc
+  {
+    x = x + y;
+  }
+{
+  p(1 + 2, 3);
+}

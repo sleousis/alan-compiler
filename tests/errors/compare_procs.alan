@@ -1,0 +1,6 @@
+-- Relational operators take int or byte operands (F06).
+main () : proc
+  p () : proc { }
+{
+  if (p() == p()) writeString("eq\n");
+}

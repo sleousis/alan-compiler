@@ -1,0 +1,5 @@
+-- The program's function is called with no arguments (I4).
+main (n : int) : proc
+{
+  writeInteger(n);
+}

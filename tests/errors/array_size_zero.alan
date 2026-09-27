@@ -1,0 +1,6 @@
+-- An array size is a positive constant (F12).
+main () : proc
+  a : int[0];
+{
+  a[0] = 1;
+}

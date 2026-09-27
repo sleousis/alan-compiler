@@ -1,0 +1,13 @@
+-- A reference parameter needs an l-value, not a call (I3).
+main () : proc
+  inc (x : reference int) : proc
+  {
+    x = x + 1;
+  }
+  h () : int
+  {
+    return 4;
+  }
+{
+  inc(h());
+}

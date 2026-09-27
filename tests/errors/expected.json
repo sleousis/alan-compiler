@@ -4,5 +4,17 @@
   {"file": "tests/errors/after_comment.alan", "line": 5, "contains": "error:"},
   {"file": "tests/errors/unterminated_comment.alan", "line": 5, "contains": "Unterminated comment"},
   {"file": "Examples/test2", "line": null, "contains": "error:"},
-  {"file": "tests/errors/nul_in_string.alan", "line": 4, "contains": "NUL character in string literal"}
+  {"file": "tests/errors/nul_in_string.alan", "line": 4, "contains": "NUL character in string literal"},
+  {"file": "tests/errors/ref_arg_call_result.alan", "line": 12, "contains": "Only L-values can be passed by reference (parameter x)"},
+  {"file": "tests/errors/ref_arg_expression.alan", "line": 8, "contains": "Only L-values can be passed by reference (parameter x)"},
+  {"file": "tests/errors/main_with_parameters.alan", "line": 2, "contains": "The main function main cannot have parameters"},
+  {"file": "tests/errors/function_as_value.alan", "line": 9, "contains": "h is a function, so it needs arguments in parentheses"},
+  {"file": "tests/errors/compare_procs.alan", "line": 5, "contains": "operands must be int or byte, not proc"},
+  {"file": "tests/errors/array_as_index.alan", "line": 6, "contains": "Index of array must be an int"},
+  {"file": "tests/errors/array_to_scalar_param.alan", "line": 5, "contains": "n Parameter Type Mismatch (no arrays allowed)"},
+  {"file": "tests/errors/array_size_zero.alan", "line": 3, "contains": "Array size must be a positive int"},
+  {"file": "tests/errors/int_constant_range.alan", "line": 5, "contains": "Integer constant 4294967297 is out of range (0 to 2147483647)"},
+  {"file": "tests/errors/unknown_identifier.alan", "line": 6, "contains": "Identifier y not found"},
+  {"file": "tests/errors/proc_return_value.alan", "line": 6, "contains": "Function q is a proc, so its return cannot have a value"},
+  {"file": "tests/errors/array_value_param.alan", "line": 3, "contains": "array must be a reference parameter"}
 ]

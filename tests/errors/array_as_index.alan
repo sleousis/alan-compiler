@@ -1,0 +1,7 @@
+-- An array index is an int, not an array (F07).
+main () : proc
+  a : int[5];
+  b : int[5];
+{
+  a[b] = 1;
+}

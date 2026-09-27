@@ -1,0 +1,5 @@
+-- An array parameter is passed by reference.
+main () : proc
+  f (a : int []) : proc { }
+{
+}

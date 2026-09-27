@@ -1,0 +1,23 @@
+-- Variables, array elements, reference parameters and string literals
+-- are l-values that reference parameters accept (I3).
+main () : proc
+  a : int[3];
+  x : int;
+  s : byte[10];
+  inc (n : reference int) : proc { n = n + 1; }
+  twice (n : reference int) : proc { inc(n); inc(n); }
+  first (t : reference byte []) : byte { return t[0]; }
+{
+  x = 1;
+  a[1] = 5;
+  inc(x);
+  twice(a[1]);
+  writeInteger(x);
+  writeString(" ");
+  writeInteger(a[1]);
+  writeString("\n");
+  writeChar(first("hi"));
+  strcpy(s, "ok");
+  writeChar(first(s));
+  writeString("\n");
+}

@@ -1,0 +1,8 @@
+-- The largest int constant is 2147483647 (F13).
+main () : proc
+  x : int;
+{
+  x = 2147483647;
+  if (x == 2147483646 + 1) writeString("max\n");
+  if (x / 65536 == 32767) writeString("32767\n");
+}

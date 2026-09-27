@@ -1,0 +1,10 @@
+-- A function name is not a value (I5).
+main () : proc
+  h () : int
+  {
+    return 42;
+  }
+  x : int;
+{
+  x = h;
+}

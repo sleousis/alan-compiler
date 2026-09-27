@@ -1,0 +1,6 @@
+-- An int constant fits in 32 bits (F13).
+main () : proc
+{
+  writeInteger(2147483647);
+  writeInteger(4294967297);
+}

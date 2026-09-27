@@ -545,10 +545,6 @@ Value * ast_compile (ast t) {
 			tmpFunParameter->parType = i8;
 			tmpFunParameter->parTypePure = i8;
 		}
-		if (t->left->k == TYPEARR) {
-			error_prefix(t->line);
-			error("In function \033[1;36m%s\033[0m, array must be a reference parameter.", currentFunction->funName);
-		}
 		tmpFunParameter->isRef = false;
 		tmpFunParameter->isArray = false;
 		currentFunction->funParameters.push_back(tmpFunParameter);
@@ -1022,6 +1018,46 @@ bool llvm_compile (ast t, const char *debugFile) {
 // The FUNCDEF node of each Alan function's symbol table entry.
 static std::map<SymbolEntry *, ast> funcDecls;
 
+// The name of a type in messages. A proc call has no value.
+static const char *typeName (Type_T type) {
+	return type->kind == Type_tag::TYPE_VOID ? "proc" : types[type->kind];
+}
+
+static const char *operatorName (kind k) {
+	switch (k) {
+	case PLUS: return "+";
+	case MINUS: return "-";
+	case TIMES: return "*";
+	case DIV: return "/";
+	case MOD: return "%";
+	case EQUALS: return "==";
+	case NOTEQUALS: return "!=";
+	case LESSEQUALS: return "<=";
+	case GREATEQUALS: return ">=";
+	case GREATER: return ">";
+	default: return "<";
+	}
+}
+
+// Checks the operands of an arithmetic or relational operator. Spec 1.4.3:
+// both are int or both are byte.
+static void checkOperands (ast op) {
+	const char *name = operatorName(op->k);
+	Type_T l = op->left->type, r = op->right->type;
+	if (l->isArray == 1 || r->isArray == 1) {
+		error_prefix(op->line);
+		error("type mismatch in %s operator (can't use array in expression).", name);
+	}
+	if (!equalType(l, r)) {
+		error_prefix(op->line);
+		error("type mismatch in %s operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", name, typeName(l), typeName(r));
+	}
+	if (l->kind != Type_tag::TYPE_INTEGER && l->kind != Type_tag::TYPE_CHAR) {
+		error_prefix(op->line);
+		error("type mismatch in %s operator (operands must be int or byte, not %s).", name, typeName(l));
+	}
+}
+
 Type_T ast_sem (ast t, SymbolEntry * f) {
 	if (t == NULL) return NULL;
 	// Symbol table errors have no line of their own, so they use this one.
@@ -1054,72 +1090,20 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		return NULL;
 	}
 	case SEQ: {
-		//printf("%s\n",kinds[t->k]);
-		Type_T *retType = new(Type_T);
-		if (f!= NULL && f->entryType == ENTRY_PARAMETER) {
-			Type_T checkType = ast_sem(t->left, f);
-			if (checkType->isArray != f->u.eParameter.type->isArray) {
-				error_prefix(t->line);
-				error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).", f->id);
-			}
-			if (!equalType(checkType, f->u.eParameter.type)) {
-				error_prefix(t->line);
-				error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", f->id, types[checkType->kind],types[f->u.eParameter.type->kind]);
-			}
-			if (f->u.eParameter.mode == PASS_BY_VALUE && checkType->isArray == 1) {
-				error_prefix(t->line);
-				error("Can't pass Array \033[1;36m%s\033[0m as Parameter by value.", f->id);
-			}
-			if (f->u.eParameter.mode == PASS_BY_REFERENCE && t->left->k != ID && t->left->k != ARREXPR && t->left->k != STRING  && t->left->k != FUNCALL && checkType->isArray) {
-				error_prefix(t->line);
-				error("Only L-values can be passed by reference.");
-			}
-			SymbolEntry *nextParameter = (SymbolEntry*)malloc(sizeof(SymbolEntry));
-			nextParameter = f->u.eParameter.next;
-			if (nextParameter == NULL && t->right != NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", f->id);}
-			if (nextParameter != NULL && t->right == NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", f->id);}
-			if (*retType == NULL) *retType = checkType;
-			if (t->right->k != SEQ) {
-				checkType = ast_sem(t->right, f);
-				if (checkType->isArray != nextParameter->u.eParameter.type->isArray) {
-					error_prefix(t->line);
-					error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).", nextParameter->id);
-				}
-				if (!equalType(checkType, nextParameter->u.eParameter.type)) {
-					error_prefix(t->line);
-					error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", nextParameter->id, types[checkType->kind],types[nextParameter->u.eParameter.type->kind]);
-				}
-				if (nextParameter->u.eParameter.mode == PASS_BY_VALUE && checkType->isArray == 1) {
-					error_prefix(t->line);
-					error("Can't pass Array \033[1;36m%s\033[0m as Parameter by value.", nextParameter->id);
-				}
-				if (nextParameter->u.eParameter.mode == PASS_BY_REFERENCE && t->left->k != ID && t->left->k != ARREXPR && t->left->k != STRING  && t->left->k != FUNCALL && checkType->isArray != 1) {
-					error_prefix(t->line);
-					error("Only L-values can be passed by reference.");
-				}
-				nextParameter = nextParameter->u.eParameter.next;
-				if (nextParameter != NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", nextParameter->id);}
-				if (*retType == NULL) *retType = checkType;
-				return *retType;
-			}
-			else {
-				ast_sem(t->right, nextParameter);
-				return *retType;
-			}
-		}
-		else {
-			// A statement list nests on the right, so walk it in a loop.
-			*retType = ast_sem(t->left, f);
-			for (t = t->right; t != NULL && t->k == SEQ; t = t->right)
-				ast_sem(t->left, f);
-			ast_sem(t, f);
-			return *retType;
-		}
+		// A statement list nests on the right, so walk it in a loop.
+		for (; t != NULL && t->k == SEQ; t = t->right)
+			ast_sem(t->left, f);
+		ast_sem(t, f);
+		return NULL;
 	}
 	case RET: {
 		//printf("%s\n",kinds[t->k]);
 		if (f->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("case RET error!");}
 		Type_T functionType = f->u.eFunction.resultType;
+		if (functionType->kind == Type_tag::TYPE_VOID && t->left->k != TYPE) {
+			error_prefix(t->line);
+			error("Function \033[1;36m%s\033[0m is a proc, so its return cannot have a value.", f->id);
+		}
 		Type_T tempType = ast_sem(t->left,f);
 		if (tempType->isArray != 0) {
 			error_prefix(t->line);
@@ -1132,7 +1116,10 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		return NULL;
 	}
 	case PAR: {
-		//printf("%s: %s\n",kinds[t->k] ,t->id);
+		if (t->left->k == TYPEARR) {
+			error_prefix(t->line);
+			error("In function \033[1;36m%s\033[0m, array must be a reference parameter.", f->id);
+		}
 		newParameter(t->id, ast_sem(t->left, f), PASS_BY_VALUE, f);
 		return NULL;
 	}
@@ -1149,7 +1136,6 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 	case TYPEARR: {
 		//printf("%s: %s ARRAY\n",kinds[t->k] ,types[t->type->kind]);
 		t->type->isArray = 1;
-		if (t->num < 0) { error_prefix(t->line); error ("Array size must be a positive int.");}
 		t->type->size = t->num;
 		return t->type;
 	}
@@ -1158,7 +1144,11 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		return typeVoid;
 	}
 	case VAR: {
-		//printf("%s: %s\n",kinds[t->k] ,t->id);
+		// A parameter's array type has no size, a variable's must be positive.
+		if (t->left->k == TYPEARR && t->left->num <= 0) {
+			error_prefix(t->line);
+			error("Array size must be a positive int.");
+		}
 		newVariable(t->id, ast_sem(t->left,f));
 		return NULL;
 	}
@@ -1191,16 +1181,14 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		retType->isArray = 0;
 		t->type = retType;
 		Type_T tempType2 = ast_sem(t->right,f);
-		if (tempType2->kind != Type_tag::TYPE_INTEGER) {
+		if (tempType2->kind != Type_tag::TYPE_INTEGER || tempType2->isArray) {
 			error_prefix(t->line);
 			error ("Index of array must be an int.");
 		}
 		return retType;
 	}
 	case FUNCALL: {
-		//printf("%s: %s\n",kinds[t->k] ,t->id);
-		SymbolEntry *theFunction = (SymbolEntry*)malloc(sizeof(SymbolEntry));
-		theFunction = lookupEntry(t->id,LOOKUP_ALL_SCOPES,false);
+		SymbolEntry *theFunction = lookupEntry(t->id,LOOKUP_ALL_SCOPES,false);
 		if (theFunction == NULL) {
 			theFunction = lookupLibrary(t->id);
 			if (theFunction == NULL) {
@@ -1213,36 +1201,33 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		auto decl = funcDecls.find(theFunction);
 		t->decl = decl == funcDecls.end() ? NULL : decl->second;
 		t->type = theFunction->u.eFunction.resultType;
-		SymbolEntry *firstParameter = (SymbolEntry*)malloc(sizeof(SymbolEntry));
-		firstParameter = theFunction->u.eFunction.firstArgument;
-		SymbolEntry *nextParameter = (SymbolEntry*)malloc(sizeof(SymbolEntry));
-		if (firstParameter != NULL) nextParameter = firstParameter->u.eParameter.next;
-		if (firstParameter == NULL && t->left != NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m cannot have any Parameters.", t->id);}
-		if (firstParameter != NULL && t->left == NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m must have Parameters.", t->id);}
-		if (firstParameter != NULL && nextParameter != NULL && t->left->k != SEQ) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", t->id);}
-		if (firstParameter != NULL && nextParameter == NULL && t->left->k == SEQ) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", t->id);}
-		if (firstParameter != NULL && firstParameter->u.eParameter.next == NULL) {
-			Type_T checkType = ast_sem(t->left, f);
-			if (checkType->isArray != firstParameter->u.eParameter.type->isArray) {
+		SymbolEntry *param = theFunction->u.eFunction.firstArgument;
+		if (param == NULL && t->left != NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m cannot have any Parameters.", t->id);}
+		if (param != NULL && t->left == NULL) { error_prefix(t->line); error("Function \033[1;36m%s\033[0m must have Parameters.", t->id);}
+		// The arguments nest on the right: SEQ(a, SEQ(b, c)).
+		for (ast iter = t->left; iter != NULL; param = param->u.eParameter.next) {
+			ast arg = iter->k == SEQ ? iter->left : iter;
+			iter = iter->k == SEQ ? iter->right : NULL;
+			if (param == NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there are too many Parameters.", t->id);}
+			Type_T argType = ast_sem(arg, f);
+			Type_T parType = param->u.eParameter.type;
+			if (argType->isArray != parType->isArray) {
 				error_prefix(t->line);
-				error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).");
+				if (parType->isArray) error("\033[1;36m%s\033[0m Parameter Type Mismatch (an array is expected).", param->id);
+				else error("\033[1;36m%s\033[0m Parameter Type Mismatch (no arrays allowed).", param->id);
 			}
-			if (!equalType(checkType, firstParameter->u.eParameter.type)) {
+			if (!equalType(argType, parType)) {
 				error_prefix(t->line);
-				error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", firstParameter->id, types[checkType->kind], types[firstParameter->u.eParameter.type->kind]);
+				error("\033[1;36m%s\033[0m Parameter Type Mismatch (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).", param->id, typeName(argType), typeName(parType));
 			}
-			if (firstParameter->u.eParameter.mode == PASS_BY_VALUE && checkType->isArray == 1) {
+			// Spec 1.4.4: a reference parameter needs an l-value: a variable,
+			// a parameter, an array element or a string literal.
+			if (param->u.eParameter.mode == PASS_BY_REFERENCE && arg->k != ID && arg->k != ARREXPR && arg->k != STRING) {
 				error_prefix(t->line);
-				error("Can't pass L-value \033[1;36m%s\033[0m Parameter by value.", firstParameter->id);
-			}
-			if (firstParameter->u.eParameter.mode == PASS_BY_REFERENCE && t->left->k != ID && t->left->k != ARREXPR && t->left->k != STRING && t->left->k != FUNCALL) {
-				error_prefix(t->line);
-				error("Only L-values can pass by reference.");
+				error("Only L-values can be passed by reference (parameter \033[1;36m%s\033[0m).", param->id);
 			}
 		}
-		else{
-			ast_sem(t->left, firstParameter);
-		}
+		if (param != NULL) { error_prefix(t->line); error("Error at Parameter \033[1;36m%s\033[0m, there must exist more Parameters.", param->id);}
 		return t->type;
 	}
 	case FUNCDEF: {
@@ -1253,6 +1238,11 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		if (outermost) openScope();
 		// A duplicate name is reported on the line of the header.
 		linecount = functionLine(t);
+		// The program starts by calling this function with no arguments.
+		if (outermost && t->left != NULL) {
+			error_prefix(functionLine(t));
+			error("The main function \033[1;36m%s\033[0m cannot have parameters.", t->id);
+		}
 		SymbolEntry *theFunction = newFunction(t->id);
 		funcDecls[theFunction] = t;
 		openScope();
@@ -1266,33 +1256,21 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		return NULL;
 	}
 	case ID: {
-		//printf("%s: %s\n",kinds[t->k] ,t->id);
-		SymbolEntry *entry = (SymbolEntry*)malloc(sizeof(SymbolEntry));
-		entry = lookupEntry(t->id,LOOKUP_CURRENT_SCOPE,false);
+		SymbolEntry *entry = lookupEntry(t->id,LOOKUP_CURRENT_SCOPE,false);
 		if (entry == NULL) {
 			error_prefix(t->line);
-			error("Identifier not found.");
-			return NULL;
+			error("Identifier \033[1;36m%s\033[0m not found.", t->id);
 		}
-		if (entry->entryType == ENTRY_VARIABLE) {
-			t->type = entry->u.eVariable.type;
-			return entry->u.eVariable.type;
-		}
-		if (entry->entryType == ENTRY_CONSTANT) {
-			t->type = entry->u.eConstant.type;
-			return entry->u.eConstant.type;
-		}
-		if (entry->entryType == ENTRY_FUNCTION) {
-			t->type = entry->u.eFunction.resultType;
-			return entry->u.eFunction.resultType;
-		}
-		if (entry->entryType == ENTRY_PARAMETER) {
-			t->type = entry->u.eParameter.type;
-			return entry->u.eParameter.type;
-		}
-		if (entry->entryType == ENTRY_TEMPORARY) {
-			t->type = entry->u.eTemporary.type;
-			return entry->u.eTemporary.type;
+		switch (entry->entryType) {
+		case ENTRY_VARIABLE: t->type = entry->u.eVariable.type; break;
+		case ENTRY_PARAMETER: t->type = entry->u.eParameter.type; break;
+		case ENTRY_CONSTANT: t->type = entry->u.eConstant.type; break;
+		case ENTRY_TEMPORARY: t->type = entry->u.eTemporary.type; break;
+		case ENTRY_FUNCTION:
+			// Spec 1.4.1: only variables and parameters are l-values, and a
+			// function is used only by calling it.
+			error_prefix(t->line);
+			error("\033[1;36m%s\033[0m is a function, so it needs arguments in parentheses.", t->id);
 		}
 		return t->type;
 	}
@@ -1327,96 +1305,17 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(first,f);
 		for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
 			ast op = *it;
-			const char *name = op->k == PLUS ? "+" : op->k == MINUS ? "-" : op->k == TIMES ? "*" : op->k == DIV ? "/" : "%";
 			linecount = op->line;
 			ast_sem(op->right,f);
-			if (op->left->type->isArray == 1 || op->right->type->isArray == 1)
-			{ error_prefix(op->line);
-			  error("type mismatch in %s operator (can't use array in expression).", name);}
-			if (!equalType(op->left->type, op->right->type)) {
-				error_prefix(op->line);
-				error("type mismatch in %s operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",name,types[op->left->type->kind],types[op->right->type->kind]);
-			}
+			checkOperands(op);
 			op->type = op->left->type;
 		}
 		return t->type;
 	}
-	case EQUALS: {
-		//printf("%s: ==\n",kinds[t->k]);
+	case EQUALS: case NOTEQUALS: case LESSEQUALS: case GREATEQUALS: case GREATER: case LESS: {
 		ast_sem(t->left,f);
 		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in == operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in == operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
-		return t->type;
-	}
-	case NOTEQUALS: {
-		//printf("%s: !=\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in != operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in != operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
-		return t->type;
-	}
-	case LESSEQUALS: {
-		//printf("%s: <=\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in <= operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in <= operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
-		return t->type;
-	}
-	case GREATEQUALS: {
-		//printf("%s: >=\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in >= operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in >= operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
-		return t->type;
-	}
-	case GREATER: {
-		//printf("%s: >\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in > operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in > operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
-		return t->type;
-	}
-	case LESS: {
-		//printf("%s: <\n",kinds[t->k]);
-		ast_sem(t->left,f);
-		ast_sem(t->right,f);
-		if (t->left->type->isArray == 1 || t->right->type->isArray == 1)
-		{ error_prefix(t->line);
-		  error("type mismatch in < operator (can't use array in expression).");}
-		if (!equalType(t->left->type, t->right->type)) {
-			error_prefix(t->line);
-			error("type mismatch in < operator (type \033[1;36m%s\033[0m with type \033[1;36m%s\033[0m).",types[t->left->type->kind],types[t->right->type->kind]);
-		}
+		checkOperands(t);
 		return t->type;
 	}
 	case NOT: {
