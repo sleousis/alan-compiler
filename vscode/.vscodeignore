@@ -11,3 +11,5 @@ node_modules/**
 dist/**/*.map
 **/*.ts
 out/**
+package-lock.json
+images/**

@@ -60,7 +60,15 @@ export class DebugBuilds {
   private readonly sessions = new Set<string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
 
-  constructor(private readonly root: string = os.tmpdir(), private readonly log: (line: string) => void = () => {}) {}
+  /**
+   * uid is the user whose folders sweep may remove, undefined on Windows,
+   * where the temp folder is per user anyway. Tests pass another.
+   */
+  constructor(
+    private readonly root: string = os.tmpdir(),
+    private readonly log: (line: string) => void = () => {},
+    private readonly uid: number | undefined = process.getuid?.(),
+  ) {}
 
   /** A new empty folder for one build. */
   create(): Promise<string> {
@@ -124,6 +132,8 @@ export class DebugBuilds {
       try {
         const s = await stat(dir);
         if (!s.isDirectory() || now - s.mtimeMs < maxAgeMs) continue;
+        // Another user's folder in a shared temp folder is theirs to remove.
+        if (this.uid !== undefined && s.uid !== this.uid) continue;
       } catch {
         continue;
       }

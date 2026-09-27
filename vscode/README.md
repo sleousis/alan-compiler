@@ -27,7 +27,7 @@ The extension needs the Alan compiler `alanc` to run, build and debug programs. 
 - **From a terminal.** Use the one-line installers from the [compiler's README](https://github.com/sleousis/alan-compiler#install). The extension finds `alanc` on your PATH.
 - **Your own build.** Set `alan.compilerPath` to its path.
 
-The extension looks for the compiler in this order: `alan.compilerPath`, the copy it installed, then `alanc` on PATH. It offers an update when the installed copy is too old.
+The extension looks for the compiler in this order: `alan.compilerPath`, the copy it installed, then `alanc` on PATH. It asks each compiler for its version with `alanc --version` and offers an update when the compiler is older than v2.0.0.
 
 Bundles exist for Windows, Linux and macOS 12 or later, each on x64 and ARM64. On Windows you can also run the compiler inside WSL. Turn on `alan.useWsl` and run **Alan: Install or Update Compiler**, and the Linux bundle is installed in your default WSL distribution.
 

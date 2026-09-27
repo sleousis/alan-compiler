@@ -10,7 +10,9 @@ import {
   CompilerRef, buildOutputPath, commandLine, failureSummary, findCompiler, forgetCompiler, needsSaveAs, runCompiler,
   stripAnsi,
 } from "./compiler";
-import { GITHUB, install, installedCompilerPath, uninstall, wslInstallCommand, wslUninstallCommand } from "./installer";
+import {
+  GITHUB, hostArch, install, installedCompilerPath, latestCompilerTag, uninstall, wslInstallCommand, wslUninstallCommand,
+} from "./installer";
 
 const BUILD_TIMEOUT_MS = 120_000;
 const IR_TIMEOUT_MS = 60_000;
@@ -342,7 +344,14 @@ async function installCompiler(host: Host): Promise<void> {
   busy = true;
   try {
     if (useWsl()) {
-      const failed = await runInWsl(host, "Installing the Alan compiler in WSL", wslInstallCommand());
+      let tag: string;
+      try {
+        tag = await latestCompilerTag(GITHUB);
+      } catch (e) {
+        reportError(host, "Install in WSL", e);
+        return;
+      }
+      const failed = await runInWsl(host, `Installing Alan ${tag} in WSL`, wslInstallCommand(tag));
       forgetCompiler();
       if (failed) reportError(host, "Install in WSL", `Installing the Alan compiler in WSL failed: ${failed}`);
       else void vscode.window.showInformationMessage("Installed the Alan compiler in WSL.");
@@ -352,14 +361,19 @@ async function installCompiler(host: Host): Promise<void> {
     try {
       const r = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "Installing the Alan compiler", cancellable: true },
-        (progress, token) => {
+        async (progress, token) => {
           const abort = new AbortController();
           const cancel = token.onCancellationRequested(() => abort.abort());
           let last = 0;
-          return install(storage, GITHUB, process.platform, process.arch, (message, pct) => {
-            progress.report({ message, increment: pct - last });
-            last = pct;
-          }, abort.signal).finally(() => cancel.dispose());
+          try {
+            const arch = await hostArch(process.platform, process.arch, process.env);
+            return await install(storage, GITHUB, process.platform, arch, (message, pct) => {
+              progress.report({ message, increment: pct - last });
+              last = pct;
+            }, abort.signal);
+          } finally {
+            cancel.dispose();
+          }
         });
       forgetCompiler();
       host.output.appendLine(`Installed Alan ${r.tag} at ${r.alanc}`);

@@ -82,11 +82,22 @@ describe("Alan extension", function () {
   });
 
   it("reports a syntax error within 2 seconds of typing it", async () => {
-    const copy = await scratch(fs.readFileSync(bubbleSort, "utf8"));
-    await eventually("the server to know the copy", 10_000, () => libraryItem(copy.uri, "readInteger"));
-    assert.equal(vscode.languages.getDiagnostics(copy.uri).length, 0);
+    // The copy starts with an error, so its diagnostics show that the server
+    // analysed it. Zero diagnostics before any analysis would prove nothing.
+    const error = "x = ;\n\t";
+    const lines = fs.readFileSync(bubbleSort, "utf8").split("\n");
+    lines[48] = lines[48].slice(0, 1) + error + lines[48].slice(1);
+    const copy = await scratch(lines.join("\n"));
+    const count = () => vscode.languages.getDiagnostics(copy.uri).length;
+    await eventually("the first analysis of the copy", 10_000, async () => (count() ? true : undefined));
+    const fix = new vscode.WorkspaceEdit();
+    fix.delete(copy.uri, new vscode.Range(new vscode.Position(48, 1), new vscode.Position(49, 1)));
+    assert.ok(await vscode.workspace.applyEdit(fix));
+    assert.equal(copy.getText(), fs.readFileSync(bubbleSort, "utf8"));
+    // Only a new analysis clears them: the fixed copy has no problems.
+    await eventually("the fixed copy to have no problems", 10_000, async () => (count() === 0 ? true : undefined));
     const edit = new vscode.WorkspaceEdit();
-    edit.insert(copy.uri, new vscode.Position(48, 1), "x = ;\n\t");
+    edit.insert(copy.uri, new vscode.Position(48, 1), error);
     const typed = Date.now();
     assert.ok(await vscode.workspace.applyEdit(edit));
     await eventually("a diagnostic", 2_000, async () => {

@@ -21,8 +21,11 @@ import * as tar from "tar";
 import * as yauzl from "yauzl";
 
 export interface ReleaseSource {
-  /** The GitHub API URL of the latest release, whose JSON has tag_name. */
-  apiLatest: string;
+  /**
+   * The GitHub API URL that lists the releases, newest first. Not
+   * /releases/latest: that can be an extension release (vscode-v*).
+   */
+  apiReleases: string;
   /** The URL of an asset of the release tagged tag. */
   download: (tag: string, asset: string) => string;
   /** The largest bundle download accepted. 1 GiB when left out. Tests lower it. */
@@ -32,15 +35,17 @@ export interface ReleaseSource {
 const REPO = "sleousis/alan-compiler";
 
 export const GITHUB: ReleaseSource = {
-  apiLatest: `https://api.github.com/repos/${REPO}/releases/latest`,
+  apiReleases: `https://api.github.com/repos/${REPO}/releases?per_page=100`,
   download: (tag, asset) => `https://github.com/${REPO}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`,
 };
 
 /** The oldest compiler this extension works with. */
 export const MIN_COMPILER = "v2.0.0";
 
-/** The installer script that WSL mode runs inside WSL. */
-export const INSTALL_SH_URL = `https://raw.githubusercontent.com/${REPO}/master/install/install.sh`;
+/** The installer script of the release tagged tag, which WSL mode runs inside WSL. */
+export function installShUrl(tag: string): string {
+  return `https://raw.githubusercontent.com/${REPO}/${encodeURIComponent(tag)}/install/install.sh`;
+}
 
 const NO_RELEASE = "No Alan release for this platform.";
 const OFFLINE = "Could not reach GitHub. Check your connection and try again.";
@@ -72,6 +77,38 @@ const LIMITS: UnpackLimits = { bytes: 4 * 1024 * 1024 * 1024, entries: 200_000 }
 
 /** An error whose message a person can act on. */
 class InstallError extends Error {}
+
+/** Where Windows keeps the machine's own CPU name, which emulation does not change. */
+const MACHINE_KEY = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
+
+/**
+ * The CPU to install for, like the shell installers choose it. VS Code for
+ * x64 can run emulated on an arm64 machine, and then process.arch says x64.
+ * On macOS sysctl.proc_translated is 1 under Rosetta. On Windows an
+ * emulated x64 process sees PROCESSOR_ARCHITECTURE=AMD64, so, like
+ * install.ps1, the machine's PROCESSOR_ARCHITECTURE comes from the registry,
+ * with PROCESSOR_ARCHITEW6432 and PROCESSOR_ARCHITECTURE as a fallback.
+ * ask runs a command and gives its output, or "" when it fails.
+ */
+export async function hostArch(
+  platform: NodeJS.Platform, arch: string, env: NodeJS.ProcessEnv, ask: (cmd: string, args: string[]) => Promise<string> = output,
+): Promise<string> {
+  if (platform === "win32") {
+    const reg = await ask("reg", ["query", MACHINE_KEY, "/v", "PROCESSOR_ARCHITECTURE"]);
+    const machine = /PROCESSOR_ARCHITECTURE\s+REG_\w+\s+(\S+)/i.exec(reg)?.[1] ?? "";
+    const own = env.PROCESSOR_ARCHITEW6432 || env.PROCESSOR_ARCHITECTURE || "";
+    return [machine, own].some((a) => a.trim().toUpperCase() === "ARM64") ? "arm64" : arch;
+  }
+  if (platform === "darwin" && arch !== "arm64") {
+    return (await ask("sysctl", ["-n", "sysctl.proc_translated"])).trim() === "1" ? "arm64" : arch;
+  }
+  return arch;
+}
+
+function output(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => execFile(cmd, args, { timeout: 5000, windowsHide: true },
+    (err, stdout) => resolve(err ? "" : String(stdout))));
+}
 
 /** The release platform for a Node platform and CPU: "win32","arm64" gives "windows-arm64". */
 export function platformId(platform: NodeJS.Platform, arch: string): string {
@@ -191,18 +228,37 @@ async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/**
+ * The newest compiler release: the first release in the list that is not a
+ * draft or a prerelease and whose tag is a version like v2.0.0. Extension
+ * releases (vscode-v*) share the list and are skipped.
+ */
 async function latestTag(src: ReleaseSource, signal?: AbortSignal): Promise<string> {
-  const text = await fetchText(src.apiLatest, signal);
-  let tag: unknown;
+  const text = await fetchText(src.apiReleases, signal);
+  let list: unknown;
   try {
-    tag = (JSON.parse(text) as { tag_name?: unknown }).tag_name;
+    list = JSON.parse(text);
   } catch {
     // Reported below.
   }
-  if (typeof tag !== "string" || !tag.startsWith("v") || !VERSION_TAG.test(tag)) {
-    throw new InstallError("GitHub did not name a valid latest Alan release. Try again later.");
+  if (!Array.isArray(list)) throw new InstallError("GitHub did not send a valid list of Alan releases. Try again later.");
+  for (const r of list as { tag_name?: unknown; draft?: unknown; prerelease?: unknown }[]) {
+    if (!r || typeof r !== "object" || r.draft === true || r.prerelease === true) continue;
+    const tag = r.tag_name;
+    if (typeof tag === "string" && /^v[0-9]/.test(tag) && VERSION_TAG.test(tag)) return tag;
   }
-  return tag;
+  throw new InstallError("GitHub lists no Alan compiler release. Try again later.");
+}
+
+/** latestTag with the same friendly errors as install. */
+export async function latestCompilerTag(src: ReleaseSource, signal?: AbortSignal): Promise<string> {
+  try {
+    const tag = await latestTag(src, signal);
+    if (isOlderTag(tag, MIN_COMPILER)) throw new InstallError(TOO_OLD);
+    return tag;
+  } catch (e) {
+    throw friendly(e, signal);
+  }
 }
 
 /** The lowercase SHA-256 that sums, in sha256sum format, lists for name. */
@@ -707,17 +763,21 @@ export async function uninstall(storageDir: string): Promise<void> {
 /**
  * Downloads install.sh into a temporary file and runs it, so a failed
  * download fails the command instead of running part of a script. The URL
- * reaches the script as $0, never as part of its text.
+ * reaches the script as $0 and the tag as $1, never as part of its text.
  */
-const WSL_INSTALL = 't=$(mktemp) || exit 1; curl -fsSL "$0" -o "$t" && sh "$t"; r=$?; rm -f "$t"; exit $r';
+const WSL_INSTALL = 't=$(mktemp) || exit 1; curl -fsSL "$0" -o "$t" && ALAN_VERSION="$1" sh "$t"; r=$?; rm -f "$t"; exit $r';
 
 /** Removes what install.sh installed. ~/.local/bin/alanc goes only if it is the link install.sh made. */
 const WSL_UNINSTALL = 'rm -rf "$HOME/.local/share/alan" "$HOME/.local/share/alan.new" && '
   + 'if [ -L "$HOME/.local/bin/alanc" ]; then rm -f "$HOME/.local/bin/alanc"; fi';
 
-/** The command that installs the compiler inside WSL with install/install.sh. */
-export function wslInstallCommand(): { cmd: string; args: string[] } {
-  return { cmd: "wsl.exe", args: ["-e", "sh", "-c", WSL_INSTALL, INSTALL_SH_URL] };
+/**
+ * The command that installs release tag inside WSL with the install.sh of
+ * that same tag. The tag reaches the script as $1 and install.sh as
+ * ALAN_VERSION, so both download the same release.
+ */
+export function wslInstallCommand(tag: string): { cmd: string; args: string[] } {
+  return { cmd: "wsl.exe", args: ["-e", "sh", "-c", WSL_INSTALL, installShUrl(tag), tag] };
 }
 
 /** The command that removes the compiler install.sh put inside WSL. */

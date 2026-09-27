@@ -74,7 +74,12 @@ def main():
         (rel / name).write_bytes(data)
         sums.append(f"{hashlib.sha256(data).hexdigest()}  {name}\n")
     (rel / "SHA256SUMS").write_bytes("".join(sums).encode())
-    (HERE / "latest.json").write_bytes(b'{"tag_name": "v2.0.0", "name": "v2.0.0"}\n')
+    # Like the GitHub list: newest first, with an extension release and a
+    # compiler prerelease on top that the installer skips.
+    (HERE / "releases.json").write_bytes(
+        b'[{"tag_name": "vscode-v1.0.0", "draft": false, "prerelease": false},\n'
+        b' {"tag_name": "v2.1.0-rc1", "draft": false, "prerelease": true},\n'
+        b' {"tag_name": "v2.0.0", "draft": false, "prerelease": false}]\n')
 
     evil = HERE / "evil"
     evil.mkdir(exist_ok=True)

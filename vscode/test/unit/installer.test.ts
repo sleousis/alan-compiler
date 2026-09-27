@@ -1,4 +1,5 @@
 import { strict as assert } from "assert";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -7,8 +8,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { gzipSync } from "node:zlib";
 import {
-  assetName, extractArchive, GITHUB, install, installedCompilerPath, installedTag, isOlderTag, MIN_COMPILER, platformId,
-  redirectAllowed, ReleaseSource, uninstall, wslInstallCommand, wslUninstallCommand,
+  assetName, extractArchive, GITHUB, hostArch, install, installedCompilerPath, installedTag, isOlderTag, latestCompilerTag,
+  MIN_COMPILER, platformId, redirectAllowed, ReleaseSource, uninstall, wslInstallCommand, wslUninstallCommand,
 } from "../../src/client/installer";
 
 const FIXTURES = path.join(__dirname, "..", "fixtures", "fake-release");
@@ -21,8 +22,8 @@ function serve(routes: Map<string, Buffer> = new Map()): Promise<{ base: string;
   const server = http.createServer((req, res) => {
     const url = decodeURIComponent((req.url ?? "/").split("?")[0]);
     hits.push(url);
-    if (url === "/redirect/latest.json") {
-      res.writeHead(302, { Location: "/latest.json" });
+    if (url === "/redirect/releases.json") {
+      res.writeHead(302, { Location: "/releases.json" });
       res.end();
       return;
     }
@@ -53,7 +54,7 @@ function serve(routes: Map<string, Buffer> = new Map()): Promise<{ base: string;
 }
 
 function source(base: string, dir = ""): ReleaseSource {
-  return { apiLatest: `${base}${dir}/latest.json`, download: (tag, asset) => `${base}${dir}/${tag}/${asset}` };
+  return { apiReleases: `${base}${dir}/releases.json`, download: (tag, asset) => `${base}${dir}/${tag}/${asset}` };
 }
 
 const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex");
@@ -157,7 +158,7 @@ describe("installer", () => {
   });
 
   it("follows redirects", async () => {
-    const r = await installHere(tmp, { ...fake, apiLatest: `${srv.base}/redirect/latest.json` }, here.platform, here.arch);
+    const r = await installHere(tmp, { ...fake, apiReleases: `${srv.base}/redirect/releases.json` }, here.platform, here.arch);
     assert.equal(r.tag, "v2.0.0");
   });
 
@@ -167,7 +168,7 @@ describe("installer", () => {
     await srv.close();
     srv = await serve(bad);
     const fakeCorrupt: ReleaseSource = {
-      apiLatest: `${srv.base}/latest.json`,
+      apiReleases: `${srv.base}/releases.json`,
       download: (tag, a) => `${srv.base}${a === "SHA256SUMS" ? "/bad" : ""}/${tag}/${a}`,
     };
     await assert.rejects(installHere(tmp, fakeCorrupt, process.platform, process.arch),
@@ -196,8 +197,8 @@ describe("installer", () => {
   it("fails clearly when a download breaks off", async () => {
     const asset = assetName("v2.0.0", here.platform, here.arch);
     const server = http.createServer((req, res) => {
-      if (req.url === "/latest.json") {
-        res.end('{"tag_name":"v2.0.0"}');
+      if (req.url === "/releases.json") {
+        res.end('[{"tag_name":"v2.0.0"}]');
       } else if (req.url === "/v2.0.0/SHA256SUMS") {
         res.end(`${"2".repeat(64)}  ${asset}\n`);
       } else {
@@ -218,7 +219,7 @@ describe("installer", () => {
 
   it("says there is no release for this platform when the release lacks SHA256SUMS", async () => {
     await srv.close();
-    srv = await serve(new Map([["/bare/latest.json", Buffer.from('{"tag_name":"v2.0.1"}')]]));
+    srv = await serve(new Map([["/bare/releases.json", Buffer.from('[{"tag_name":"v2.0.1"}]')]]));
     await assert.rejects(installHere(tmp, source(srv.base, "/bare"), here.platform, here.arch),
       { message: "No Alan release for this platform." });
     assert.ok(srv.hits.includes("/bare/v2.0.1/SHA256SUMS"));
@@ -228,17 +229,17 @@ describe("installer", () => {
   it("says there is no compatible release yet when the latest is older than MIN_COMPILER", async () => {
     // Like GitHub today: v1.0.0 has no bundles.
     await srv.close();
-    srv = await serve(new Map([["/old/latest.json", Buffer.from('{"tag_name":"v1.0.0"}')]]));
+    srv = await serve(new Map([["/old/releases.json", Buffer.from('[{"tag_name":"v1.0.0"}]')]]));
     await assert.rejects(installHere(tmp, source(srv.base, "/old"), here.platform, here.arch),
       { message: "No compatible Alan release yet. The extension needs v2.0.0 or later." });
-    assert.deepEqual(srv.hits, ["/old/latest.json"]);
+    assert.deepEqual(srv.hits, ["/old/releases.json"]);
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
 
   it("says there is no release for this platform when SHA256SUMS does not list it", async () => {
     await srv.close();
     srv = await serve(new Map([
-      ["/other/latest.json", Buffer.from('{"tag_name":"v2.0.0"}')],
+      ["/other/releases.json", Buffer.from('[{"tag_name":"v2.0.0"}]')],
       ["/other/v2.0.0/SHA256SUMS", Buffer.from(`${"3".repeat(64)}  alan-v2.0.0-plan9-x64.tar.gz\n`)],
     ]));
     await assert.rejects(installHere(tmp, source(srv.base, "/other"), here.platform, here.arch),
@@ -254,9 +255,58 @@ describe("installer", () => {
 
   it("refuses a tag that is not a version", async () => {
     await srv.close();
-    srv = await serve(new Map([["/weird/latest.json", Buffer.from('{"tag_name":"../../x"}')]]));
+    srv = await serve(new Map([["/weird/releases.json", Buffer.from('[{"tag_name":"../../x"}]')]]));
     await assert.rejects(installHere(tmp, source(srv.base, "/weird"), here.platform, here.arch), /release/);
     assert.deepEqual(fs.readdirSync(tmp), []);
+  });
+
+  it("installs the newest compiler release when an extension release is the latest", async () => {
+    // The fixture list starts with vscode-v1.0.0 and a v2.1.0-rc1 prerelease.
+    const r = await installHere(tmp, fake, here.platform, here.arch);
+    assert.equal(r.tag, "v2.0.0");
+    assert.ok(!srv.hits.some((h) => h.includes("vscode-v1.0.0") || h.includes("v2.1.0-rc1")), srv.hits.join(" "));
+  });
+
+  it("skips drafts and prereleases", async () => {
+    await srv.close();
+    srv = await serve(new Map([["/mixed/releases.json", Buffer.from(JSON.stringify([
+      { tag_name: "v3.0.0", draft: true, prerelease: false },
+      { tag_name: "v2.9.0", draft: false, prerelease: true },
+      { tag_name: "v2.0.1", draft: false, prerelease: false },
+    ]))]]));
+    await assert.rejects(installHere(tmp, source(srv.base, "/mixed"), here.platform, here.arch),
+      { message: "No Alan release for this platform." });
+    assert.deepEqual(srv.hits, ["/mixed/releases.json", "/mixed/v2.0.1/SHA256SUMS"]);
+  });
+
+  it("says clearly that there is no compiler release when the list has only extension releases", async () => {
+    await srv.close();
+    srv = await serve(new Map([["/ext/releases.json", Buffer.from(JSON.stringify([
+      { tag_name: "vscode-v1.1.0", draft: false, prerelease: false },
+      { tag_name: "vscode-v1.0.0", draft: false, prerelease: false },
+    ]))]]));
+    await assert.rejects(installHere(tmp, source(srv.base, "/ext"), here.platform, here.arch),
+      { message: "GitHub lists no Alan compiler release. Try again later." });
+    assert.deepEqual(srv.hits, ["/ext/releases.json"]);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  });
+
+  it("refuses an answer that is not a list", async () => {
+    await srv.close();
+    srv = await serve(new Map([["/obj/releases.json", Buffer.from('{"tag_name":"v2.0.0"}')]]));
+    await assert.rejects(installHere(tmp, source(srv.base, "/obj"), here.platform, here.arch),
+      { message: "GitHub did not send a valid list of Alan releases. Try again later." });
+  });
+
+  it("names the newest compiler release for a WSL install", async () => {
+    assert.equal(await latestCompilerTag(fake, ac.signal), "v2.0.0");
+    await srv.close();
+    srv = await serve(new Map([["/old/releases.json", Buffer.from('[{"tag_name":"v1.0.0"}]')]]));
+    await assert.rejects(latestCompilerTag(source(srv.base, "/old"), ac.signal),
+      { message: "No compatible Alan release yet. The extension needs v2.0.0 or later." });
+    await srv.close();
+    await assert.rejects(latestCompilerTag(source(srv.base), ac.signal),
+      { message: "Could not reach GitHub. Check your connection and try again." });
   });
 
   it("explains an HTTP error from GitHub", async () => {
@@ -296,8 +346,8 @@ describe("installer", () => {
   it("refuses a download larger than the limit before reading it", async () => {
     const asset = assetName("v2.0.0", here.platform, here.arch);
     const server = http.createServer((req, res) => {
-      if (req.url === "/latest.json") {
-        res.end('{"tag_name":"v2.0.0"}');
+      if (req.url === "/releases.json") {
+        res.end('[{"tag_name":"v2.0.0"}]');
       } else if (req.url === "/v2.0.0/SHA256SUMS") {
         res.end(`${"4".repeat(64)}  ${asset}\n`);
       } else {
@@ -321,8 +371,8 @@ describe("installer", () => {
     const asset = assetName("v2.0.0", here.platform, here.arch);
     let sent = 0;
     const server = http.createServer((req, res) => {
-      if (req.url === "/latest.json") {
-        res.end('{"tag_name":"v2.0.0"}');
+      if (req.url === "/releases.json") {
+        res.end('[{"tag_name":"v2.0.0"}]');
       } else if (req.url === "/v2.0.0/SHA256SUMS") {
         res.end(`${"5".repeat(64)}  ${asset}
 `);
@@ -486,6 +536,44 @@ describe("release names", () => {
     assert.equal(platformId("darwin", "x64"), "macos-x64");
     assert.equal(platformId("darwin", "arm64"), "macos-arm64");
   });
+  it("installs for the machine's CPU when VS Code runs emulated", async () => {
+    const asked: string[][] = [];
+    /** Answers reg query with the machine value given, and sysctl with translated. */
+    const fake = (machine: string, translated = "") => async (cmd: string, args: string[]) => {
+      asked.push([cmd, ...args]);
+      if (cmd === "reg") return machine && `\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\r\n    PROCESSOR_ARCHITECTURE    REG_SZ    ${machine}\r\n\r\n`;
+      if (cmd === "sysctl") return translated;
+      throw new Error(`unexpected ${cmd}`);
+    };
+    // Windows: x64 VS Code emulated on ARM64 sees AMD64, and the registry tells.
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITECTURE: "AMD64" }, fake("ARM64")), "arm64");
+    assert.deepEqual(asked[0], ["reg", "query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+      "/v", "PROCESSOR_ARCHITECTURE"]);
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITECTURE: "AMD64" }, fake("AMD64")), "x64");
+    // Without an answer from reg the process's own values decide.
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITECTURE: "ARM64" }, fake("")), "arm64");
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITEW6432: "ARM64", PROCESSOR_ARCHITECTURE: "x86" }, fake("")),
+      "arm64");
+    assert.equal(await hostArch("win32", "x64", { PROCESSOR_ARCHITEW6432: "AMD64", PROCESSOR_ARCHITECTURE: "ARM64" }, fake("")),
+      "x64");
+    assert.equal(await hostArch("win32", "x64", {}, fake("")), "x64");
+    assert.equal(await hostArch("win32", "arm64", { PROCESSOR_ARCHITECTURE: "ARM64" }, fake("ARM64")), "arm64");
+    // macOS: sysctl.proc_translated is 1 under Rosetta.
+    assert.equal(await hostArch("darwin", "x64", {}, fake("", "1\n")), "arm64");
+    assert.equal(await hostArch("darwin", "x64", {}, fake("", "0\n")), "x64");
+    assert.equal(await hostArch("darwin", "x64", {}, fake("", "")), "x64", "an Intel Mac has no such sysctl");
+    // An arm64 Mac and Linux ask nothing.
+    asked.length = 0;
+    assert.equal(await hostArch("darwin", "arm64", {}, fake("")), "arm64");
+    assert.equal(await hostArch("linux", "x64", { PROCESSOR_ARCHITECTURE: "ARM64" }, fake("ARM64")), "x64");
+    assert.deepEqual(asked, []);
+  });
+  it("finds this machine's CPU", async () => {
+    const arch = await hostArch(process.platform, process.arch, process.env);
+    assert.ok(arch === "x64" || arch === "arm64", arch);
+    // Not emulated (the test runners): the answer is the process's own CPU.
+    if (process.platform !== "darwin" || process.arch === "arm64") assert.equal(arch, process.arch);
+  });
   it("throws for other platforms", () => {
     for (const [p, a] of [["win32", "ia32"], ["linux", "arm"], ["freebsd", "x64"], ["sunos", "x64"]] as const) {
       assert.throws(() => platformId(p, a), { message: "No Alan release for this platform." });
@@ -497,7 +585,7 @@ describe("release names", () => {
     assert.equal(assetName("v2.1.0", "linux", "x64"), "alan-v2.1.0-linux-x64.tar.gz");
   });
   it("points at the GitHub releases", () => {
-    assert.equal(GITHUB.apiLatest, "https://api.github.com/repos/sleousis/alan-compiler/releases/latest");
+    assert.equal(GITHUB.apiReleases, "https://api.github.com/repos/sleousis/alan-compiler/releases?per_page=100");
     assert.equal(GITHUB.download("v2.0.0", "SHA256SUMS"),
       "https://github.com/sleousis/alan-compiler/releases/download/v2.0.0/SHA256SUMS");
   });
@@ -524,13 +612,32 @@ describe("release names", () => {
 });
 
 describe("WSL install", () => {
-  it("runs install.sh inside WSL with argument arrays", () => {
-    const c = wslInstallCommand();
+  it("runs the install.sh of the tag being installed, with argument arrays", () => {
+    const c = wslInstallCommand("v2.1.0");
     assert.equal(c.cmd, "wsl.exe");
     assert.deepEqual(c.args.slice(0, 3), ["-e", "sh", "-c"]);
-    assert.equal(c.args[4], "https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.sh");
-    assert.equal(c.args.length, 5);
+    assert.equal(c.args[4], "https://raw.githubusercontent.com/sleousis/alan-compiler/v2.1.0/install/install.sh");
+    assert.equal(c.args[5], "v2.1.0");
+    assert.equal(c.args.length, 6);
     assert.ok(!c.args[3].includes("https://"), "the URL is an argument, not part of the script");
+    assert.ok(!c.args[3].includes("v2.1.0"), "the tag is an argument, not part of the script");
+    assert.match(c.args[3], /ALAN_VERSION="\$1" sh "\$t"/, "install.sh gets the same tag");
+  });
+  it("hands the tag to install.sh as ALAN_VERSION", async function () {
+    if (process.platform === "win32") this.skip();
+    // The script with sh itself, a local install.sh and a curl that copies it.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alan-wsl-"));
+    try {
+      fs.writeFileSync(path.join(dir, "install.sh"), 'echo "version=$ALAN_VERSION"\n');
+      fs.writeFileSync(path.join(dir, "curl"), '#!/bin/sh\n# curl -fsSL <url> -o <file>\ncp "$2" "$4"\n', { mode: 0o755 });
+      const c = wslInstallCommand("v2.1.0");
+      const args = [...c.args.slice(3, 4), path.join(dir, "install.sh"), c.args[5]];
+      const r = spawnSync("sh", ["-c", ...args], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), "version=v2.1.0");
+    } finally {
+      fs.rmSync(dir, RM_RETRY);
+    }
   });
   it("removes the WSL copy with a fixed script", () => {
     const c = wslUninstallCommand();
