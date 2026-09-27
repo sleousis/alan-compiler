@@ -318,5 +318,47 @@
     "input": null,
     "opt": true,
     "expected": "regress/string_literal_loop.txt"
+  },
+  {
+    "name": "nested_calls",
+    "file": "tests/regress/nested_calls.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/nested_calls.txt"
+  },
+  {
+    "name": "nested_calls",
+    "file": "tests/regress/nested_calls.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/nested_calls.txt"
+  },
+  {
+    "name": "library_declared_later",
+    "file": "tests/regress/library_declared_later.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/library_declared_later.txt"
+  },
+  {
+    "name": "library_declared_later",
+    "file": "tests/regress/library_declared_later.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/library_declared_later.txt"
+  },
+  {
+    "name": "shadowing",
+    "file": "tests/regress/shadowing.alan",
+    "input": null,
+    "opt": false,
+    "expected": "regress/shadowing.txt"
+  },
+  {
+    "name": "shadowing",
+    "file": "tests/regress/shadowing.alan",
+    "input": null,
+    "opt": true,
+    "expected": "regress/shadowing.txt"
   }
 ]

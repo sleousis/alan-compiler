@@ -20,6 +20,9 @@ typedef struct node {
 	struct node *left, *right;
 	Type_T type;
 	int line;
+	// For a call, the FUNCDEF of the Alan function it calls, or NULL for a
+	// library function. ast_sem sets it.
+	struct node *decl;
 } *ast;
 
 Type_T          createInt          ();

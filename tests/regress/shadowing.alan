@@ -1,0 +1,29 @@
+-- A function may hide a name of an enclosing scope (F17), and a nested
+-- function does not hide a variable of its parent (F01).
+main () : proc
+  n : int;
+  a : int;
+  A6 () : proc { }
+  h () : proc
+    n () : proc { writeString("inner n\n"); }
+  {
+    n();
+  }
+  f (f : int) : int
+  {
+    return f + 1;
+  }
+  main () : proc
+  {
+    writeString("inner main\n");
+  }
+{
+  a = 1;
+  n = 2;
+  writeInteger(a + n);
+  writeString("\n");
+  h();
+  writeInteger(f(41));
+  writeString("\n");
+  main();
+}

@@ -1,0 +1,17 @@
+-- A function declared after a call does not hide the library function
+-- at that call (C8, Pascal scoping).
+main () : proc
+  g () : proc
+  {
+    writeInteger(strlen("ab"));
+    writeString("\n");
+  }
+  strlen (s : reference byte []) : int
+  {
+    return 99;
+  }
+{
+  g();
+  writeInteger(strlen("ab"));
+  writeString("\n");
+}

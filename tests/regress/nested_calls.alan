@@ -1,0 +1,42 @@
+-- A nested function can call its parent, its ancestors and their
+-- siblings, and a user function hides the library one (C8).
+main () : proc
+  x : int;
+  e (n : int) : int
+  {
+    return n * 2;
+  }
+  extend (b : byte) : int
+  {
+    return 1000;
+  }
+  f (n : int) : int
+    g (m : int) : int
+    {
+      if (m <= 0) return 0;
+      return f(m - 1) + 1;
+    }
+  {
+    if (n <= 0) return 0;
+    return g(n - 1) + 1;
+  }
+  p (n : int) : int
+    q (m : int) : int
+      r (j : int) : int
+      {
+        if (j > 0) return p(j - 1) + 100;
+        return e(3) + extend('a') + x;
+      }
+    {
+      return r(m);
+    }
+  {
+    return q(n);
+  }
+{
+  x = 5;
+  writeInteger(f(6));
+  writeString("\n");
+  writeInteger(p(2));
+  writeString("\n");
+}

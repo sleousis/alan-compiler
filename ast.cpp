@@ -39,6 +39,7 @@ static ast ast_make (kind k, char *c, int n, ast l, ast r, Type_T t, int line) {
 	p->right = r;
 	p->type = t;
 	p->line = line;
+	p->decl = NULL;
 	return p;
 }
 
@@ -303,23 +304,8 @@ struct functionTable {
 };
 struct functionTable *currentFunction = new struct functionTable ();
 
-struct functionTable* findFunction (char* funName) {
-	struct functionTable *tmp = currentFunction;
-	for (size_t i = 0; i < tmp->children.size(); i++) {
-		if (strcmp(tmp->children[i]->funName, funName) == 0) {
-			tmp = tmp->children[i];
-			return tmp;
-		}
-	}
-	tmp = tmp->father;
-	for (size_t i = 0; i < tmp->children.size(); i++) {
-		if (strcmp(tmp->children[i]->funName, funName) == 0) {
-			tmp = tmp->children[i];
-			return tmp;
-		}
-	}
-	return NULL;
-}
+// The function table of each FUNCDEF node.
+static std::map<ast, functionTable *> functionOf;
 
 //array of Library functions
 // new[]() runs the constructors of the vector and map members. The old
@@ -615,16 +601,10 @@ Value * ast_compile (ast t) {
 		return trackPtr(Builder.CreateGEP(elemType, l, index, "tmpArr"), elemType);
 	}
 	case FUNCALL: {
-		bool isInLibrary = false;
-		struct functionTable *tmp = findFunction(t->id);
-		if (tmp == NULL) {
-			tmp = findFunctionInLibrary(t->id);
-			if (tmp == NULL) {
-				error_prefix(t->line);
-				error("Function [1;36m%s[0m not in scope.", t->id);
-			}
-			isInLibrary = true;
-		}
+		// ast_sem found the function the call names, by the scope rules.
+		bool isInLibrary = t->decl == NULL;
+		struct functionTable *tmp = isInLibrary ? findFunctionInLibrary(t->id) : functionOf[t->decl];
+		if (tmp == NULL) internal("no code for function %s", t->id);
 		std::vector<Value*> Args;
 		// Pass the variables of the enclosing functions that the callee can
 		// see. The caller sees each of them too, maybe under a shadowed name.
@@ -654,7 +634,7 @@ Value * ast_compile (ast t) {
 		if (!FuncDefLockEnabled) {
 			//Enable funcDef lock
 			FuncDefLockEnabled = true;
-			currentFunction = findFunction(t->id);
+			currentFunction = functionOf[t];
 			BasicBlock *BB = BasicBlock::Create(TheContext, "entry", currentFunction->func);
 			Builder.SetInsertPoint(BB);
 			if (DI) {
@@ -728,6 +708,7 @@ Value * ast_compile (ast t) {
 			newFunction->funName = t->id;
 			newFunction->father = currentFunction;
 			currentFunction->children.push_back(newFunction);
+			functionOf[t] = newFunction;
 			currentFunction = newFunction;
 			//get parent's variables as hidden parameters
 			for (variableStruct *v : currentFunction->father->funVariables) {
@@ -1038,6 +1019,9 @@ bool llvm_compile (ast t, const char *debugFile) {
 	return true;
 }
 
+// The FUNCDEF node of each Alan function's symbol table entry.
+static std::map<SymbolEntry *, ast> funcDecls;
+
 Type_T ast_sem (ast t, SymbolEntry * f) {
 	if (t == NULL) return NULL;
 	// Symbol table errors have no line of their own, so they use this one.
@@ -1225,6 +1209,9 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 			}
 		}
 		if (theFunction->entryType != ENTRY_FUNCTION) { error_prefix(t->line); error("\033[1;36m%s\033[0m is not a function.", t->id);}
+		// NULL for a library function, which has no FUNCDEF.
+		auto decl = funcDecls.find(theFunction);
+		t->decl = decl == funcDecls.end() ? NULL : decl->second;
 		t->type = theFunction->u.eFunction.resultType;
 		SymbolEntry *firstParameter = (SymbolEntry*)malloc(sizeof(SymbolEntry));
 		firstParameter = theFunction->u.eFunction.firstArgument;
@@ -1259,18 +1246,23 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		return t->type;
 	}
 	case FUNCDEF: {
-		//printf("%s: %s\n",kinds[t->k] ,t->id);
-		openScope();
+		// As in Pascal, the name of a function belongs to the enclosing
+		// scope, and its parameters and locals to a scope of its own. The
+		// program's function gets an outer scope for its name.
+		bool outermost = currentScope == NULL;
+		if (outermost) openScope();
+		// A duplicate name is reported on the line of the header.
+		linecount = functionLine(t);
 		SymbolEntry *theFunction = newFunction(t->id);
+		funcDecls[theFunction] = t;
+		openScope();
 		ast_sem(t->left, theFunction);
 		Type_T resultType = ast_sem(resultTypeNode(t),NULL);
 		theFunction->u.eFunction.resultType = resultType;
 		ast_sem(t->right, theFunction);
 		endFunctionHeader(theFunction, resultType);
 		closeScope();
-		if (currentScope != NULL) {
-			insertEntry(theFunction);
-		}
+		if (outermost) closeScope();
 		return NULL;
 	}
 	case ID: {

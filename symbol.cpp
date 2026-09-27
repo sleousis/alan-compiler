@@ -352,7 +352,13 @@ SymbolEntry * newConstant (char * name, Type_T type, ...)
 
 SymbolEntry * newFunction (char * name)
 {
-	SymbolEntry * e = lookupEntry(name, LOOKUP_CURRENT_SCOPE, false);
+	SymbolEntry * e;
+
+	/* Only the current scope matters: a function may hide a name of an
+	   enclosing scope, as in Pascal. */
+	for (e = currentScope->entries; e != NULL; e = e->nextInScope)
+		if (strcmp(name, e->id) == 0)
+			break;
 
 	if (e == NULL) {
 		e = newEntry(name);

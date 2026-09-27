@@ -1,0 +1,4 @@
+3
+inner n
+42
+inner main
