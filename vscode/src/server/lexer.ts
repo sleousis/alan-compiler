@@ -12,6 +12,9 @@ export interface Pos { line: number; character: number; }        // 0-based, LSP
 export interface Range { start: Pos; end: Pos; }
 export interface Token { kind: TokenKind; text: string; range: Range; }
 export interface LexError { message: string; range: Range; }
+/** A comment kept by lex(src, { keepComments: true }). Block comments include their nested parts. */
+export interface Comment { text: string; range: Range; block: boolean; }
+export interface LexOptions { keepComments?: boolean; }
 
 const KEYWORDS: Record<string, TokenKind> = {
   if: "kw_if", else: "kw_else", while: "kw_while", return: "kw_return",
@@ -50,9 +53,10 @@ function charLiteralLength(src: string, i: number): number {
   return src[i + 1 + body] === "'" ? body + 2 : 0;
 }
 
-export function lex(src: string): { tokens: Token[]; errors: LexError[] } {
+export function lex(src: string, options: LexOptions = {}): { tokens: Token[]; errors: LexError[]; comments?: Comment[] } {
   const tokens: Token[] = [];
   const errors: LexError[] = [];
+  const comments: Comment[] | undefined = options.keepComments ? [] : undefined;
   let i = 0;
   let line = 0;
   let col = 0;
@@ -98,6 +102,7 @@ export function lex(src: string): { tokens: Token[]; errors: LexError[] } {
    */
   const skipBlockComment = () => {
     const start = pos();
+    const from = i;
     advance(2);
     let depth = 1;
     while (depth > 0 && i < src.length) {
@@ -112,6 +117,15 @@ export function lex(src: string): { tokens: Token[]; errors: LexError[] } {
         range: { start, end: { line: start.line, character: start.character + 2 } },
       });
     }
+    comments?.push({ text: src.slice(from, i), range: { start, end: pos() }, block: true });
+  };
+
+  /** Skips a "--" comment starting at i, up to the end of its line. */
+  const skipLineComment = () => {
+    const start = pos();
+    const from = i;
+    advance(lineEnd(i) - i);
+    comments?.push({ text: src.slice(from, i), range: { start, end: pos() }, block: false });
   };
 
   while (i < src.length) {
@@ -119,7 +133,7 @@ export function lex(src: string): { tokens: Token[]; errors: LexError[] } {
 
     if (isWhitespace(c)) { advance(1); continue; }
 
-    if (c === "-" && src[i + 1] === "-") { advance(lineEnd(i) - i); continue; }
+    if (c === "-" && src[i + 1] === "-") { skipLineComment(); continue; }
 
     if (c === "(" && src[i + 1] === "*") { skipBlockComment(); continue; }
 
@@ -176,5 +190,5 @@ export function lex(src: string): { tokens: Token[]; errors: LexError[] } {
 
   const end = pos();
   tokens.push({ kind: "eof", text: "", range: { start: end, end } });
-  return { tokens, errors };
+  return comments ? { tokens, errors, comments } : { tokens, errors };
 }

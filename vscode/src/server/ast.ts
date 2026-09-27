@@ -36,4 +36,8 @@ export type Cond =
   | { kind: "not"; operand: Cond; range: Range }
   | { kind: "compare"; op: "==" | "!=" | "<" | ">" | "<=" | ">="; left: Expr; right: Expr; range: Range }
   | { kind: "logic"; op: "&" | "|"; left: Cond; right: Cond; range: Range };
-export interface Diagnostic { message: string; range: Range; severity: "error" | "warning"; source: "alan"; }
+/** Codes of the name errors found by scopes.ts. Lexer and parser errors carry no code. */
+export type NameErrorCode = "duplicate" | "unknown-name" | "not-an-array" | "not-a-variable" | "not-a-function" | "argument-count";
+export interface Diagnostic {
+  message: string; range: Range; severity: "error" | "warning"; source: "alan"; code?: NameErrorCode;
+}
