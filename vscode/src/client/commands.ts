@@ -8,6 +8,7 @@ import type { Diagnostic } from "vscode-languageserver";
 import { checkFile, compilerDiagnostics } from "../server/compilerCheck";
 import {
   CompilerRef, buildOutputPath, commandLine, failureSummary, findCompiler, forgetCompiler, needsSaveAs, runCompiler,
+  stripAnsi,
 } from "./compiler";
 
 const BUILD_TIMEOUT_MS = 120_000;
@@ -16,13 +17,14 @@ const IR_TIMEOUT_MS = 60_000;
 /**
  * Sends the compiler's diagnostics to the language server, which keeps them
  * until the next notification. So they are cleared as soon as the document
- * changes, and a check that finishes after a change is dropped.
+ * changes, and a check still running after a change is stopped.
  */
 export class CompilerProblems {
   private readonly shown = new Set<string>();
   private readonly generation = new Map<string, number>();
+  private readonly running = new Map<string, AbortController>();
 
-  constructor(private readonly client: LanguageClient) {}
+  constructor(private readonly client: LanguageClient, private readonly log: (line: string) => void) {}
 
   set(doc: vscode.TextDocument, diagnostics: Diagnostic[]): void {
     const key = doc.uri.toString();
@@ -42,6 +44,8 @@ export class CompilerProblems {
 
   closed(doc: vscode.TextDocument): void {
     const key = doc.uri.toString();
+    this.running.get(key)?.abort();
+    this.running.delete(key);
     this.shown.delete(key);
     this.generation.delete(key);
   }
@@ -50,13 +54,22 @@ export class CompilerProblems {
   async check(doc: vscode.TextDocument, ref: CompilerRef): Promise<void> {
     const key = doc.uri.toString();
     const gen = this.bump(key);
+    const abort = new AbortController();
+    this.running.set(key, abort);
     const version = doc.version;
-    const diagnostics = await checkFile(ref, doc.uri.fsPath, doc.getText());
-    if (!diagnostics || doc.isClosed || doc.version !== version || this.generation.get(key) !== gen) return;
-    this.set(doc, diagnostics);
+    try {
+      const diagnostics = await checkFile(ref, doc.uri.fsPath, doc.getText(), { signal: abort.signal, log: this.log });
+      if (!diagnostics || doc.isClosed || doc.version !== version || this.generation.get(key) !== gen) return;
+      this.set(doc, diagnostics);
+    } finally {
+      if (this.running.get(key) === abort) this.running.delete(key);
+    }
   }
 
+  /** Starts a new generation for key and stops the check of the previous one. */
   private bump(key: string): number {
+    this.running.get(key)?.abort();
+    this.running.delete(key);
     const gen = (this.generation.get(key) ?? 0) + 1;
     this.generation.set(key, gen);
     return gen;
@@ -66,6 +79,8 @@ export class CompilerProblems {
 export interface Host {
   context: vscode.ExtensionContext;
   problems: CompilerProblems;
+  /** The "Alan" output channel. */
+  output: vscode.OutputChannel;
 }
 
 function existsOnDisk(uri: vscode.Uri): boolean {
@@ -88,14 +103,30 @@ export async function offerInstall(): Promise<void> {
 }
 
 /**
+ * The document for a Uri a command got. An open document whose file was
+ * deleted is found among the open ones, since opening its Uri again fails.
+ */
+async function documentFor(uri: vscode.Uri): Promise<vscode.TextDocument | undefined> {
+  const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+  if (open) return open;
+  try {
+    return await vscode.workspace.openTextDocument(uri);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The document a command works on, saved to a file the compiler can read.
  * An untitled document or one without a file on disk goes through Save As,
  * and undefined means the user cancelled or saving failed.
  */
 async function savedDocument(arg: unknown): Promise<vscode.TextDocument | undefined> {
-  const doc = arg instanceof vscode.Uri
-    ? await vscode.workspace.openTextDocument(arg)
-    : vscode.window.activeTextEditor?.document;
+  const doc = arg instanceof vscode.Uri ? await documentFor(arg) : vscode.window.activeTextEditor?.document;
+  if (!doc && arg instanceof vscode.Uri) {
+    void vscode.window.showWarningMessage(`Cannot open ${arg.fsPath}.`);
+    return undefined;
+  }
   if (!doc || doc.languageId !== "alan") {
     void vscode.window.showWarningMessage("Open an Alan file first.");
     return undefined;
@@ -123,8 +154,14 @@ async function prepare(host: Host, arg: unknown): Promise<{ doc: vscode.TextDocu
   return { doc, ref };
 }
 
-/** Reports a compiler that could not start or finish, or a path it cannot open. */
-function reportFailure(what: string, detail: string | undefined, missing: boolean): void {
+/**
+ * Reports a compiler that could not start or finish, a path it cannot open,
+ * or a failed compile, and logs it with the compiler's output to the Alan
+ * output channel.
+ */
+function reportFailure(host: Host, what: string, detail: string | undefined, missing: boolean, stderr = ""): void {
+  host.output.appendLine(`${what} failed: ${missing ? "compiler not found" : detail ?? "no details"}`);
+  if (stderr.trim()) host.output.appendLine(stripAnsi(stderr).trimEnd());
   if (missing) {
     forgetCompiler();
     void offerInstall();
@@ -161,6 +198,9 @@ function taskScope(uri: vscode.Uri): vscode.WorkspaceFolder | vscode.TaskScope {
   return vscode.workspace.getWorkspaceFolder(uri) ?? vscode.TaskScope.Workspace;
 }
 
+/** Listeners for the end of runs still going. Each one leaves when its run ends. */
+const runWatchers = new Set<vscode.Disposable>();
+
 async function run(host: Host, arg: unknown): Promise<void> {
   const target = await prepare(host, arg);
   if (!target) return;
@@ -169,16 +209,22 @@ async function run(host: Host, arg: unknown): Promise<void> {
   try {
     task = runTask(ref, doc.uri.fsPath, taskScope(doc.uri));
   } catch (e) {
-    return reportFailure("Run", e instanceof Error ? e.message : String(e), false);
+    return reportFailure(host, "Run", e instanceof Error ? e.message : String(e), false);
   }
-  const execution = await vscode.tasks.executeTask(task);
+  let execution: vscode.TaskExecution;
+  try {
+    execution = await vscode.tasks.executeTask(task);
+  } catch (e) {
+    return reportFailure(host, "Run", e instanceof Error ? e.message : String(e), false);
+  }
   const ended = vscode.tasks.onDidEndTaskProcess((e) => {
     if (e.execution !== execution) return;
     ended.dispose();
+    runWatchers.delete(ended);
     if (e.exitCode === 0) host.problems.set(doc, []);
     else void host.problems.check(doc, ref);
   });
-  host.context.subscriptions.push(ended);
+  runWatchers.add(ended);
 }
 
 async function build(host: Host, arg: unknown): Promise<void> {
@@ -191,14 +237,14 @@ async function build(host: Host, arg: unknown): Promise<void> {
   try {
     cl = commandLine(ref, "build", file, { optimize: optimize(), out });
   } catch (e) {
-    return reportFailure("Build", e instanceof Error ? e.message : String(e), false);
+    return reportFailure(host, "Build", e instanceof Error ? e.message : String(e), false);
   }
   const r = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: `Building ${path.basename(file)}` },
     () => runCompiler(cl.cmd, cl.args, { timeoutMs: BUILD_TIMEOUT_MS, cwd: runFolder(file, ref) }));
-  if (r.failure) return reportFailure("Build", r.failure === "timeout" ? "the compiler took too long" : r.detail, r.failure === "missing");
+  if (r.failure) return reportFailure(host, "Build", r.failure === "timeout" ? "the compiler took too long" : r.detail, r.failure === "missing");
   host.problems.set(doc, compilerDiagnostics(r.stderr, path.basename(file), doc.getText()));
-  if (r.code !== 0) return reportFailure("Build", failureSummary(r.stderr), false);
+  if (r.code !== 0) return reportFailure(host, "Build", failureSummary(r.stderr), false, r.stderr);
   const pick = await vscode.window.showInformationMessage(`Built ${out}`, "Reveal");
   if (pick === "Reveal") await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(out));
 }
@@ -212,12 +258,12 @@ async function showIr(host: Host, arg: unknown): Promise<void> {
   try {
     cl = commandLine(ref, "ir", file, { optimize: optimize() });
   } catch (e) {
-    return reportFailure("Show IR", e instanceof Error ? e.message : String(e), false);
+    return reportFailure(host, "Show IR", e instanceof Error ? e.message : String(e), false);
   }
   const r = await runCompiler(cl.cmd, cl.args, { timeoutMs: IR_TIMEOUT_MS, cwd: runFolder(file, ref), maxBuffer: 256 * 1024 * 1024 });
-  if (r.failure) return reportFailure("Show IR", r.failure === "timeout" ? "the compiler took too long" : r.detail, r.failure === "missing");
+  if (r.failure) return reportFailure(host, "Show IR", r.failure === "timeout" ? "the compiler took too long" : r.detail, r.failure === "missing");
   host.problems.set(doc, compilerDiagnostics(r.stderr, path.basename(file), doc.getText()));
-  if (r.code !== 0) return reportFailure("Show IR", failureSummary(r.stderr), false);
+  if (r.code !== 0) return reportFailure(host, "Show IR", failureSummary(r.stderr), false, r.stderr);
   let ir: vscode.TextDocument;
   try {
     ir = await vscode.workspace.openTextDocument({ language: "llvm", content: r.stdout });
@@ -267,5 +313,6 @@ export function registerCommands(host: Host): void {
     vscode.commands.registerCommand("alan.install", notYet),
     vscode.commands.registerCommand("alan.uninstall", notYet),
     vscode.tasks.registerTaskProvider("alan", taskProvider(host)),
+    { dispose: () => { for (const w of runWatchers) w.dispose(); runWatchers.clear(); } },
   );
 }

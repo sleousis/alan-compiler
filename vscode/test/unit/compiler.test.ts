@@ -4,7 +4,9 @@ import {
   WSL_LAUNCH,
 } from "../../src/client/compiler";
 import { toWslPath } from "../../src/client/wsl";
-import { compilerDiagnostics } from "../../src/server/compilerCheck";
+import { existsSync } from "node:fs";
+import * as path from "node:path";
+import { checkFile, compilerDiagnostics } from "../../src/server/compilerCheck";
 
 describe("compiler glue", () => {
   it("parses file:line: error lines", () => {
@@ -190,6 +192,51 @@ describe("compiler diagnostics", () => {
     const d = compilerDiagnostics("h.alan:9: error: syntax error\n", "h.alan", "a\nbc");
     assert.deepEqual(d[0].range, { start: { line: 1, character: 0 }, end: { line: 1, character: 2 } });
   });
+  it("puts a failure without a line on the first line", () => {
+    const d = compilerDiagnostics("alanc: error: cannot open h.alan\n", "h.alan", "  main\n", 1);
+    assert.equal(d.length, 1);
+    assert.equal(d[0].message, "alanc: error: cannot open h.alan");
+    assert.deepEqual(d[0].range, { start: { line: 0, character: 2 }, end: { line: 0, character: 6 } });
+    assert.equal(compilerDiagnostics("", "h.alan", "x", 127)[0].message, "alanc check failed with exit status 127.");
+  });
+  it("gives nothing for a clean exit or without an exit status", () => {
+    assert.deepEqual(compilerDiagnostics("", "h.alan", "x", 0), []);
+    assert.deepEqual(compilerDiagnostics("alanc: error: x\n", "h.alan", "x"), []);
+  });
+});
+
+describe("checkFile", () => {
+  // node stands in for the compiler: `node check <file>` fails to load "check".
+  const node = { exe: process.execPath, wsl: false };
+  const file = path.join(__dirname, "no such dir", "h.alan");
+
+  it("never reports a failed check as clean", async () => {
+    const d = await checkFile(node, file, "a\n");
+    assert.ok(d);
+    assert.equal(d.length, 1);
+    assert.equal(d[0].range.start.line, 0);
+    assert.ok(typeof d[0].message === "string" && d[0].message.length > 0);
+  });
+  it("logs a missing compiler and keeps the old diagnostics", async () => {
+    const lines: string[] = [];
+    const d = await checkFile({ exe: "no-such-alanc-here", wsl: false }, file, "", { log: (l) => lines.push(l) });
+    assert.equal(d, undefined);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /failed: no-such-alanc-here not found/);
+  });
+  it("logs a path WSL cannot open", async () => {
+    const lines: string[] = [];
+    assert.equal(await checkFile({ exe: "alanc", wsl: true }, "\\\\server\\share\\h.alan", "", { log: (l) => lines.push(l) }), undefined);
+    assert.match(lines[0], /skipped: WSL cannot open/);
+  });
+  it("stays quiet when aborted", async () => {
+    const lines: string[] = [];
+    const abort = new AbortController();
+    const run = checkFile(node, file, "", { signal: abort.signal, log: (l) => lines.push(l) });
+    abort.abort();
+    assert.equal(await run, undefined);
+    assert.deepEqual(lines, []);
+  });
 });
 
 describe("runCompiler", () => {
@@ -214,5 +261,42 @@ describe("runCompiler", () => {
   it("reports a missing program", async () => {
     const r = await runCompiler("no-such-alanc-here", [], { timeoutMs: 1000 });
     assert.equal(r.failure, "missing");
+  });
+  it("reports too much output as an error, not a timeout", async () => {
+    const r = await runCompiler(node, ["-e", "process.stdout.write('x'.repeat(4096))"], { timeoutMs: 10000, maxBuffer: 100 });
+    assert.equal(r.failure, "error");
+    assert.match(r.detail ?? "", /too large/);
+  });
+  it("kills the process when aborted", async () => {
+    const abort = new AbortController();
+    const started = Date.now();
+    const run = runCompiler(node, ["-e", "setTimeout(() => {}, 5000)"], { timeoutMs: 10000, signal: abort.signal });
+    setTimeout(() => abort.abort(), 100);
+    const r = await run;
+    assert.equal(r.failure, "aborted");
+    assert.ok(Date.now() - started < 4000);
+  });
+});
+
+describe("the WSL wrapper on Windows", function () {
+  this.timeout(60000);
+  const wslExe = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "wsl.exe");
+
+  before(function () {
+    if (process.platform !== "win32" || !existsSync(wslExe)) this.skip();
+  });
+
+  it("hands hostile arguments to the Linux program byte for byte", async () => {
+    const hostile = [
+      "a b", "  two  spaces ", "Σάββας", "$HOME", "${PATH}", "q\"uote", "it's", "`id`", "$(id)", "a;b|c&d>e",
+      "line1\nline2", "trail\\", "back\\\"slash", "*.alan", "~", "", "-O",
+    ];
+    // commandLine puts exactly this in front of the compiler and its arguments.
+    const prefix = commandLine({ exe: "printf", wsl: true }, "check", "/x.alan", { optimize: false }).args.slice(0, 4);
+    assert.deepEqual(prefix, ["-e", "sh", "-c", WSL_LAUNCH]);
+    const r = await runCompiler("wsl.exe", [...prefix, "printf", "%s\\0", ...hostile], { timeoutMs: 50000 });
+    assert.equal(r.failure, undefined, r.detail);
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(r.stdout.split("\0").slice(0, -1), hostile);
   });
 });

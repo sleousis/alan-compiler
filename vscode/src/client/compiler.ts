@@ -31,6 +31,11 @@ export const WSL_LAUNCH = 'PATH="$HOME/.local/bin:$PATH"; exec "$0" "$@"';
 const ANSI = /\u001b\[[0-9;]*m/g;
 const ABORT_LINE = "The alan compiler is lazy and aborts...";
 
+/** text without its terminal colour codes. */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI, "");
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -130,21 +135,31 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   /** Set when the compiler could not run or did not finish. */
-  failure?: "missing" | "timeout" | "error";
+  failure?: "missing" | "timeout" | "aborted" | "error";
   detail?: string;
 }
 
-/** Runs cmd with an argument array (no shell) and collects its output. */
+/**
+ * Runs cmd with an argument array (no shell) and collects its output.
+ * Aborting signal kills the process.
+ */
 export function runCompiler(
-  cmd: string, args: string[], opts: { timeoutMs: number; cwd?: string; maxBuffer?: number },
+  cmd: string, args: string[], opts: { timeoutMs: number; cwd?: string; maxBuffer?: number; signal?: AbortSignal },
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     execFile(cmd, args, {
       encoding: "utf8", timeout: opts.timeoutMs, cwd: opts.cwd, windowsHide: true,
-      maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
+      maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024, signal: opts.signal,
     }, (err: ExecFileException | null, stdout: string, stderr: string) => {
       if (!err) return resolve({ code: 0, stdout, stderr });
       if (err.code === "ENOENT") return resolve({ code: null, stdout, stderr, failure: "missing", detail: err.message });
+      // Output past maxBuffer and an abort also kill the process, so they come before the timeout test.
+      if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+        return resolve({ code: null, stdout, stderr, failure: "error", detail: "the compiler's output is too large" });
+      }
+      if (err.code === "ABORT_ERR" || err.name === "AbortError") {
+        return resolve({ code: null, stdout, stderr, failure: "aborted", detail: err.message });
+      }
       if (err.killed) return resolve({ code: null, stdout, stderr, failure: "timeout", detail: err.message });
       if (typeof err.code === "number") return resolve({ code: err.code, stdout, stderr });
       resolve({ code: null, stdout, stderr, failure: "error", detail: err.message });
