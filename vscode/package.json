@@ -173,7 +173,7 @@
     "test": "mocha",
     "test:grammar": "vscode-tmgrammar-test \"test/grammar/*.alan\"",
     "test:e2e": "node test/e2e/run.mjs",
-    "test:diff": "node --stack-size=4000 --import tsx test/differential/compare.ts",
+    "test:diff": "tsx test/differential/compare.ts",
     "package": "vsce package --baseContentUrl https://github.com/sleousis/alan-compiler/blob/HEAD/vscode --baseImagesUrl https://github.com/sleousis/alan-compiler/raw/HEAD/vscode",
     "vscode:prepublish": "npm run build"
   },

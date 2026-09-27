@@ -1,0 +1,6 @@
+main () : proc
+  f (a : int) : int { return a; }
+  g () : byte { return 'a'; }
+{
+  f(g());
+}
