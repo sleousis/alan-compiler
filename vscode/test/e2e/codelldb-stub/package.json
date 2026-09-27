@@ -1,0 +1,10 @@
+{
+  "name": "vscode-lldb",
+  "displayName": "CodeLLDB stand-in for the end-to-end tests",
+  "description": "Has CodeLLDB's id so the Alan extension, which depends on it, activates without a download.",
+  "publisher": "vadimcn",
+  "version": "0.0.0",
+  "engines": {
+    "vscode": "^1.104.0"
+  }
+}

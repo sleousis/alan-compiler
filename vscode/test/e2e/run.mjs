@@ -1,17 +1,23 @@
-// Runs the end-to-end tests: bundles them into out/e2e, downloads VS Code,
-// installs CodeLLDB (the extension depends on it, so it would not activate
-// without it) and starts VS Code with the extension and the tests.
+// Runs the end-to-end tests: bundles them into out/e2e, downloads VS Code
+// and starts it with the extension and the tests.
 // Run from the vscode folder with `npm run test:e2e` after `npm run build`.
-import { spawnSync } from "node:child_process";
+//
+// The extension depends on CodeLLDB, and VS Code refuses to activate it
+// without that. The tests do not debug, so a stand-in with CodeLLDB's id
+// (codelldb-stub) loads next to the extension instead of the real one. An
+// installed CodeLLDB made the runs flaky: VS Code replaced it with its
+// platform build in the background, and for that moment the dependency was
+// gone, so activation failed or a request came back empty.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath, runTests } from "@vscode/test-electron";
+import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, "../..");
 const outDir = path.join(root, "out", "e2e");
-const CODELLDB = "vadimcn.vscode-lldb";
+const testDir = path.join(root, ".vscode-test");
 
 fs.rmSync(outDir, { recursive: true, force: true });
 await esbuild.build({
@@ -26,7 +32,7 @@ await esbuild.build({
   logLevel: "warning",
 });
 
-/** Downloads can fail on a busy network, so each gets a few tries. */
+/** The download can fail on a busy network, so it gets a few tries. */
 async function retry(what, fn) {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -40,26 +46,20 @@ async function retry(what, fn) {
 }
 
 const vscodeExecutablePath = await retry("Downloading VS Code", () => downloadAndUnzipVSCode("stable"));
-const [cli, ...cliArgs] = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
 
-const listed = spawnSync(cli, [...cliArgs, "--list-extensions"], { encoding: "utf8", shell: process.platform === "win32" });
-if (!listed.stdout?.toLowerCase().split(/\r?\n/).includes(CODELLDB)) {
-  await retry(`Installing ${CODELLDB}`, async () => {
-    const r = spawnSync(cli, [...cliArgs, "--install-extension", CODELLDB], {
-      encoding: "utf8", stdio: "inherit", shell: process.platform === "win32",
-    });
-    if (r.status !== 0) throw new Error(`exit code ${r.status}`);
-  });
-}
-
-// A fresh profile each time, so no window or editor from an earlier run comes back.
-fs.rmSync(path.join(root, ".vscode-test", "user-data"), { recursive: true, force: true });
+// A fresh profile and no installed extensions each time, so nothing from an
+// earlier run comes back.
+const userData = path.join(testDir, "user-data");
+const extensions = path.join(testDir, "extensions");
+fs.rmSync(userData, { recursive: true, force: true });
+fs.rmSync(extensions, { recursive: true, force: true });
 
 try {
   await runTests({
     vscodeExecutablePath,
-    extensionDevelopmentPath: root,
+    extensionDevelopmentPath: [root, path.join(here, "codelldb-stub")],
     extensionTestsPath: path.join(outDir, "index.js"),
+    launchArgs: [`--user-data-dir=${userData}`, `--extensions-dir=${extensions}`],
   });
 } catch (e) {
   console.error(e instanceof Error ? e.message : e);

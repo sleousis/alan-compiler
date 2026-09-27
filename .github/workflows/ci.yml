@@ -508,12 +508,10 @@ jobs:
           cache: npm
           cache-dependency-path: vscode/package-lock.json
 
-      # The end-to-end tests download VS Code and CodeLLDB into .vscode-test.
+      # The end-to-end tests download VS Code into .vscode-test.
       - uses: actions/cache@v6
         with:
-          path: |
-            vscode/.vscode-test/vscode-*
-            vscode/.vscode-test/extensions
+          path: vscode/.vscode-test/vscode-*
           key: vscode-test-${{ runner.os }}-${{ hashFiles('vscode/package-lock.json') }}
 
       - run: npm ci
