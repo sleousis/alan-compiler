@@ -292,7 +292,6 @@ struct parameterStruct {
 struct functionTable {
 	const char* funName;
 	struct functionTable *father;
-	std::vector<struct functionTable*> children;
 	std::map<std::string, Value *> NamedValues;
 	// The address of each variable the function sees, by declaration.
 	std::map<variableStruct *, Value *> addresses;
@@ -690,7 +689,6 @@ static LLVM_ATTRIBUTE_NOINLINE Value *compileFunction (ast t) {
 		struct functionTable *newFunction = new struct functionTable ();
 		newFunction->funName = t->id;
 		newFunction->father = currentFunction;
-		currentFunction->children.push_back(newFunction);
 		functionOf[t] = newFunction;
 		currentFunction = newFunction;
 		//get parent's variables as hidden parameters
