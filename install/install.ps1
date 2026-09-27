@@ -9,12 +9,23 @@
   $ProgressPreference = 'SilentlyContinue'
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
+  # Deletes a folder. A junction or symbolic link loses only the link, never
+  # the folder it points at.
+  function Remove-Folder($path) {
+    $item = Get-Item -LiteralPath $path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { [IO.Directory]::Delete($path) }
+    else { Remove-Item -LiteralPath $path -Recurse -Force }
+  }
+
   $base = if ($env:ALAN_BASE_URL) { $env:ALAN_BASE_URL } else { 'https://github.com/sleousis/alan-compiler/releases' }
-  $dest = Join-Path $env:LOCALAPPDATA 'alan'
-  $new = "$dest.new"
+  $new = $null
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ("alan-install-" + [Guid]::NewGuid())
 
   try {
+    if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is not set.' }
+    $dest = Join-Path $env:LOCALAPPDATA 'alan'
+    $new = "$dest.new"
+    $old = "$dest.old"
     $ver = $env:ALAN_VERSION
     if (-not $ver) {
       try {
@@ -47,21 +58,38 @@
     $expected = $null
     foreach ($line in Get-Content (Join-Path $tmp 'SHA256SUMS')) {
       $parts = $line -split '\s+\*?', 2
-      if ($parts.Count -eq 2 -and $parts[1] -eq $name) { $expected = $parts[0] }
+      if ($parts.Count -eq 2 -and $parts[1] -ceq $name) { $expected = $parts[0] }
     }
     $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $name)).Hash
-    if (-not $expected -or $actual -ine $expected) { throw "Checksum mismatch for $name. Nothing was installed." }
+    if (-not $expected) { throw "SHA256SUMS of Alan $ver has no line for $name. Nothing was installed." }
+    if ($actual -ine $expected) { throw "Checksum mismatch for $name. Nothing was installed." }
 
+    foreach ($leftover in $new, $old) {
+      if (Test-Path -LiteralPath $leftover) {
+        try { Remove-Folder $leftover }
+        catch { throw "Could not remove $leftover from an earlier install. Close any program that uses it and try again." }
+      }
+    }
     # ZipFile unpacks the bundle's 20000 files three times faster than Expand-Archive.
-    if (Test-Path $new) { Remove-Item -Recurse -Force $new }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::ExtractToDirectory((Join-Path $tmp $name), $new)
     if (-not (Test-Path (Join-Path $new 'alan\bin\alanc.exe'))) { throw "$name does not hold alan\bin\alanc.exe. Nothing was installed." }
-    if (Test-Path $dest) {
-      try { Remove-Item -Recurse -Force $dest }
-      catch { throw "Could not remove the old $dest. Close any program that uses it and try again." }
+    # The old install moves aside first and comes back if the new one cannot
+    # take its place, so a locked file never leaves a half-deleted install.
+    $hadOld = Test-Path -LiteralPath $dest
+    if ($hadOld) {
+      try { [IO.Directory]::Move($dest, $old) }
+      catch { throw "Could not replace $dest. Close any program that uses it and try again. Nothing was installed." }
     }
-    Move-Item (Join-Path $new 'alan') $dest
+    try { [IO.Directory]::Move((Join-Path $new 'alan'), $dest) }
+    catch {
+      if ($hadOld) { [IO.Directory]::Move($old, $dest) }
+      throw "Could not move the new install into $dest. The old one is still there."
+    }
+    if ($hadOld) {
+      try { Remove-Folder $old }
+      catch { Write-Host "Could not remove $old. Delete it later." -ForegroundColor Yellow }
+    }
 
     # Only the user PATH changes. The registry value is read and written as
     # is, so entries such as %USERPROFILE%\... stay unexpanded.
@@ -91,7 +119,8 @@
     if ($PSCommandPath) { exit 1 }
     $global:LASTEXITCODE = 1
   } finally {
-    if (Test-Path $new) { Remove-Item -Recurse -Force $new -ErrorAction SilentlyContinue }
-    if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
+    foreach ($path in $new, $tmp) {
+      if ($path -and (Test-Path -LiteralPath $path)) { try { Remove-Folder $path } catch { } }
+    }
   }
 }

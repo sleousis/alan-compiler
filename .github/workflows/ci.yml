@@ -266,28 +266,38 @@ jobs:
           trap "kill $!" EXIT
           for i in $(seq 50); do curl -fs -o /dev/null http://127.0.0.1:8000/ && break; sleep 0.2; done
           export ALAN_BASE_URL=http://127.0.0.1:8000
+          dest="$HOME/.local/share/alan"
+          # version, expected message, and whether an install must still be there
           expect_failure() {
             code=0
             ALAN_VERSION=$1 sh install/install.sh 2> "$RUNNER_TEMP/err.txt" || code=$?
             cat "$RUNNER_TEMP/err.txt"
             test "$code" -eq 1
             grep -q "$2" "$RUNNER_TEMP/err.txt"
-            test ! -e "$HOME/.local/share/alan"
-            test ! -e "$HOME/.local/share/alan.new"
+            if [ "$3" = kept ]; then test -x "$dest/bin/alanc"; else test ! -e "$dest"; fi
+            test ! -e "$dest.new"
+            test ! -e "$dest.old"
           }
-          expect_failure v0.0.0-none "Alan v0.0.0-none has no download for ${{ matrix.platform }}"
-          expect_failure v0.0.0-bad "Checksum mismatch"
+          run_installed() {
+            env -i HOME="$HOME" PATH="$HOME/.local/bin:/usr/bin:/bin" ZIG_GLOBAL_CACHE_DIR="$ZIG_GLOBAL_CACHE_DIR" \
+              sh -c 'test "$(command -v alanc)" = "$HOME/.local/bin/alanc" && alanc run Examples/HelloWorld.alan' \
+              > "$RUNNER_TEMP/installed.txt"
+            cmp "$RUNNER_TEMP/installed.txt" tests/expected/HelloWorld.txt
+          }
+          expect_failure v0.0.0-none "Alan v0.0.0-none has no download for ${{ matrix.platform }}" gone
+          expect_failure v0.0.0-bad "Checksum mismatch" gone
           ALAN_VERSION=v0.0.0-ci sh install/install.sh
           # a second run replaces the first install
           ALAN_VERSION=v0.0.0-ci sh install/install.sh
-          env -i HOME="$HOME" PATH="$HOME/.local/bin:/usr/bin:/bin" ZIG_GLOBAL_CACHE_DIR="$ZIG_GLOBAL_CACHE_DIR" \
-            sh -c 'test "$(command -v alanc)" = "$HOME/.local/bin/alanc" && alanc run Examples/HelloWorld.alan' \
-            > "$RUNNER_TEMP/installed.txt"
-          cmp "$RUNNER_TEMP/installed.txt" tests/expected/HelloWorld.txt
+          # a failed upgrade keeps the working install
+          expect_failure v0.0.0-bad "Checksum mismatch" kept
+          run_installed
 
       # Installs with PowerShell 7, then again with Windows PowerShell 5.1,
-      # which must pick the same platform and keep one PATH entry. A new
-      # shell reads PATH from the registry and runs alanc.
+      # which must pick the same platform and keep one PATH entry. The user
+      # PATH starts with an unexpanded %USERPROFILE% entry that must survive.
+      # An upgrade with a locked file must fail and keep the old install. A
+      # new shell reads PATH from the registry and runs alanc.
       - name: Test the installer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -304,26 +314,39 @@ jobs:
             Write-Host $out
             @{ Code = $code; Out = $out }
           }
+          function Assert-Failure($version, $message, [bool]$kept) {
+            $r = Invoke-Installer pwsh $version
+            if ($r.Code -ne 1) { throw "exit code $($r.Code) for $version" }
+            if (-not $r.Out.Contains($message)) { throw "no message '$message'" }
+            if ((Test-Path "$dest\bin\alanc.exe") -ne $kept) { throw "after $version the install is there: $(-not $kept)" }
+            if (-not $kept -and (Test-Path $dest)) { throw "a failed install left $dest behind" }
+            if ((Test-Path "$dest.new") -or (Test-Path "$dest.old")) { throw "a failed install left $dest.new or $dest.old behind" }
+          }
+          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+          $seed = '%USERPROFILE%\alan-ci-unexpanded'
+          $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          $key.SetValue('Path', ((@($raw -split ';' | Where-Object { $_ }) + $seed) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
           try {
             for ($i = 0; $i -lt 50; $i++) {
               try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ | Out-Null; break } catch { Start-Sleep -Milliseconds 200 }
             }
             $env:ALAN_BASE_URL = 'http://127.0.0.1:8000'
-            foreach ($case in @(@('v0.0.0-none', 'Alan v0.0.0-none has no download for ${{ matrix.platform }}.'),
-                                @('v0.0.0-bad', 'Checksum mismatch'))) {
-              $r = Invoke-Installer pwsh $case[0]
-              if ($r.Code -ne 1) { throw "exit code $($r.Code) for $($case[0])" }
-              if (-not $r.Out.Contains($case[1])) { throw "no message '$($case[1])'" }
-              if ((Test-Path $dest) -or (Test-Path "$dest.new")) { throw "a failed install left $dest behind" }
-            }
+            Assert-Failure 'v0.0.0-none' 'Alan v0.0.0-none has no download for ${{ matrix.platform }}.' $false
+            Assert-Failure 'v0.0.0-bad' 'Checksum mismatch' $false
             foreach ($shell in 'pwsh', 'powershell') {
               $r = Invoke-Installer $shell 'v0.0.0-ci'
               if ($r.Code -ne 0) { throw "$shell failed with exit code $($r.Code)" }
               if (-not $r.Out.Contains('(${{ matrix.platform }})')) { throw "$shell picked the wrong platform" }
             }
+            Assert-Failure 'v0.0.0-bad' 'Checksum mismatch' $true
+            $lock = [IO.File]::Open("$dest\README.txt", 'Open', 'Read', 'None')
+            try { Assert-Failure 'v0.0.0-ci' "Could not replace $dest" $true } finally { $lock.Close() }
           } finally {
             Stop-Process $server
           }
+          if ($key.GetValueKind('Path') -ne 'ExpandString') { throw "the user PATH is now $($key.GetValueKind('Path'))" }
+          $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          if (-not ($raw -split ';' -contains $seed)) { throw "the user PATH lost $seed" }
           $bin = "$dest\bin"
           $user = @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_.TrimEnd('\') -ieq $bin })
           if ($user.Count -ne 1) { throw "the user PATH holds $bin $($user.Count) times" }

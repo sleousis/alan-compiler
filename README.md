@@ -20,7 +20,12 @@ Windows (PowerShell):  irm https://raw.githubusercontent.com/sleousis/alan-compi
 Linux and macOS:       curl -fsSL https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.sh | sh
 ```
 
-On Windows the compiler goes to `%LOCALAPPDATA%\alan` and its `bin` folder is added to your user PATH. On Linux and macOS it goes to `~/.local/share/alan` and `alanc` is linked into `~/.local/bin`. The installers check the download against the release's `SHA256SUMS` and print how to uninstall. Set `ALAN_VERSION` (for example `v2.0.0`) to install another release.
+On Windows the compiler goes to `%LOCALAPPDATA%\alan` and its `bin` folder is added to your user PATH. On Linux and macOS it goes to `~/.local/share/alan` and `alanc` is linked into `~/.local/bin`. The installers check the download against the release's `SHA256SUMS` and print how to uninstall. To install a given release instead of the latest, set `ALAN_VERSION`:
+
+```
+Windows (PowerShell):  $env:ALAN_VERSION = "v2.0.0"; irm https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.ps1 | iex
+Linux and macOS:       curl -fsSL https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.sh | ALAN_VERSION=v2.0.0 sh
+```
 
 Then run a program:
 
@@ -34,18 +39,20 @@ Add `-O` to `run` or `build` to turn on optimization. The first program takes a 
 
 ## Download
 
-The [Releases page](https://github.com/sleousis/alan-compiler/releases) has a ready-built compiler for Linux x86-64.
+The [Releases page](https://github.com/sleousis/alan-compiler/releases) has a self-contained bundle for each system, if you prefer to install by hand:
 
-- `alanc-<version>-linux-x86_64.tar.gz` holds `alanc`, the `alan` driver script, the runtime library `alan_lib_v2/lib.a`, the example programs and a short `HOW-TO-RUN.txt`.
+| File | System |
+| --- | --- |
+| `alan-<version>-windows-x64.zip` | Windows on x64 |
+| `alan-<version>-windows-arm64.zip` | Windows on ARM64 |
+| `alan-<version>-linux-x64.tar.gz` | Linux on x64 |
+| `alan-<version>-linux-arm64.tar.gz` | Linux on ARM64 |
+| `alan-<version>-macos-x64.tar.gz` | macOS 12 or later on Intel |
+| `alan-<version>-macos-arm64.tar.gz` | macOS 12 or later on Apple silicon |
 
-It was built on Ubuntu 20.04 and runs there and on newer distributions. You still need LLVM 23 and clang 23 from [apt.llvm.org](https://apt.llvm.org) (the `llvm-23` and `clang-23` packages), because `alanc` uses `libLLVM.so.23.1` and the `alan` script calls `llc` and `clang`. To try it:
+Each one unpacks to an `alan` folder with `bin/alanc`, the runtime library in `lib`, the Zig toolchain in `zig`, a `README.txt` and a `VERSION` file. Nothing else has to be installed. LLVM and clang are not needed, because `alanc` has LLVM built in and Zig links the programs. Check the download against `SHA256SUMS` from the same release, then run `alan/bin/alanc run hello.alan` or add `alan/bin` to your PATH. The Linux bundles were built on Ubuntu 20.04 and run there and on newer distributions.
 
-```
-tar xzf alanc-v1.0.0-linux-x86_64.tar.gz
-cd alanc-v1.0.0-linux-x86_64
-export PATH=/usr/lib/llvm-23/bin:$PATH
-./alan -x Examples/HelloWorld.alan
-```
+Release v1.0.0 is older. It has only a Linux x86-64 build that needs LLVM 23 and clang 23 from [apt.llvm.org](https://apt.llvm.org), and the installers above do not handle it.
 
 ## Tech stack
 
