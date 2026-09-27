@@ -14,6 +14,10 @@
    the code generator calls them the same way with and without -g. */
 struct DebugInfo;
 
+/* DW_AT_producer of the compile unit. alanc also looks for it on macOS to
+   tell the object files it keeps from other files. */
+#define ALAN_DWARF_PRODUCER "Alan compiler (alanc)"
+
 /* Starts debug information for module m compiled from filePath. The caller
    passes filePath only for -g, and keeps nullptr otherwise. */
 DebugInfo *di_begin(llvm::Module &m, const char *filePath);

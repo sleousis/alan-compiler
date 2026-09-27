@@ -1,8 +1,8 @@
 #include "cli.hpp"
+#include "debuginfo.hpp"
 #include "emit.hpp"
 #include "error.hpp"
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <string>
@@ -10,6 +10,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
@@ -44,13 +45,19 @@ static const bool kKeepObject = true;
 #else
 static const bool kKeepObject = false;
 #endif
+/* The version that --version prints when alanc runs outside a bundle. The
+   build sets it (CMake option ALAN_VERSION). */
+#ifndef ALAN_VERSION
+#define ALAN_VERSION "dev"
+#endif
 
 static int usage() {
   fprintf(stderr,
     "usage: alanc <file.alan> [-O]           print LLVM IR\n"
     "       alanc check <file.alan>          check only\n"
     "       alanc build <file.alan> [-o name] [-O] [-g]\n"
-    "       alanc run <file.alan> [-O] [-g]\n");
+    "       alanc run <file.alan> [-O] [-g]\n"
+    "       alanc --version\n");
   return 2;
 }
 
@@ -63,6 +70,18 @@ static void cli_error(const char *where, const std::string &msg) {
 static std::string self_dir(const char *argv0) {
   std::string p = llvm::sys::fs::getMainExecutable(argv0, (void *)&self_dir);
   return llvm::sys::path::parent_path(p).str();
+}
+
+/* The version of alanc: the first line of the bundle's VERSION file, next
+   to bin/, or else the version set at build time. */
+static std::string alan_version(const char *argv0) {
+  llvm::SmallString<256> p(self_dir(argv0));
+  llvm::sys::path::append(p, "..", "VERSION");
+  if (auto buf = llvm::MemoryBuffer::getFile(p, /*IsText*/ true)) {
+    llvm::StringRef v = (*buf)->getBuffer().split('\n').first.trim();
+    if (!v.empty()) return v.str();
+  }
+  return ALAN_VERSION;
 }
 
 /* A bundled tool: the environment variable wins, otherwise the path rel
@@ -179,6 +198,18 @@ static std::string default_output(const char *src) {
   return out + (kExe[0] ? kExe : ".out");
 }
 
+/* True when the file at path holds alanc's DWARF producer, which only the
+   objects that alanc keeps for a debug build do. */
+static bool is_alanc_object(const std::string &path) {
+  uint64_t size = 0;
+  if (llvm::sys::fs::file_size(path, size) || size > (256u << 20)) return false;
+  auto buf = llvm::MemoryBuffer::getFile(path);
+  if (!buf) return false;
+  /* the string with its terminating NUL, as it sits in __debug_str */
+  llvm::StringRef mark(ALAN_DWARF_PRODUCER, sizeof(ALAN_DWARF_PRODUCER));
+  return (*buf)->getBuffer().contains(mark);
+}
+
 /* True when out names the source file itself. */
 static bool is_source(const char *src, const std::string &out) {
   if (out == src) return true;
@@ -194,10 +225,16 @@ static int cmd_build(const char *argv0, const BuildOptions &o) {
                          : "the output file is the source file, use another -o");
     return 1;
   }
-  if (compile_to_module(o.src, o.opt, true, o.debug) != 0) return 1;
   /* On macOS the executable does not hold the DWARF. LLDB reads it from the
-     object, which the executable names, so the object stays next to it. */
+     object, which the executable names, so the object stays next to it. A
+     file of that name that alanc did not make is never overwritten. */
   std::string keptObj = kKeepObject && o.debug ? out + ".o" : "";
+  if (!keptObj.empty() && llvm::sys::fs::exists(keptObj) && !is_alanc_object(keptObj)) {
+    cli_error(o.src, keptObj + " exists and alanc did not make it, so a debug build "
+                     "cannot keep its object there. Move it or use another -o");
+    return 1;
+  }
+  if (compile_to_module(o.src, o.opt, true, o.debug) != 0) return 1;
   return link_module(argv0, o.src, out, keptObj, o.debug);
 }
 
@@ -247,6 +284,10 @@ static int cmd_run(const char *argv0, const BuildOptions &o) {
 }
 
 int alan_cli_main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+    llvm::outs() << "alanc " << alan_version(argv[0]) << "\n";
+    return 0;
+  }
   if (argc >= 3 && strcmp(argv[1], "check") == 0)
     return compile_to_module(argv[2], false, false, false);
   if (argc >= 2 && (strcmp(argv[1], "build") == 0 || strcmp(argv[1], "run") == 0)) {

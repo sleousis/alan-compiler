@@ -24,9 +24,12 @@ if(WIN32)
 endif()
 FLEX_TARGET(Lexer lexer.l ${CMAKE_BINARY_DIR}/lexer.cpp COMPILE_FLAGS ${FLEX_FLAGS})
 ADD_FLEX_BISON_DEPENDENCY(Lexer Parser)
+# alanc --version prints this outside a bundle. A bundle's VERSION file wins.
+set(ALAN_VERSION "dev" CACHE STRING "version compiled into alanc")
 add_executable(alanc ast.cpp symbol.cpp error.cpp general.cpp cli.cpp emit.cpp debuginfo.cpp
                ${BISON_Parser_OUTPUTS} ${FLEX_Lexer_OUTPUTS})
 target_include_directories(alanc PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+target_compile_definitions(alanc PRIVATE "ALAN_VERSION=\"${ALAN_VERSION}\"")
 # SYSTEM, so warnings in LLVM's headers are not reported (/external:I on MSVC).
 target_include_directories(alanc SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 # The project's own sources, generated ones included, must build without warnings.

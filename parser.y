@@ -251,7 +251,8 @@ int compile_to_module(const char *path, bool optimize, bool codegen, bool debug)
 #ifdef _WIN32
 /* main() would get its arguments in the ANSI code page, which cannot hold
    every file name. wmain gets them in UTF-16, and alanc passes UTF-8 paths
-   to LLVM, which opens files and runs programs with UTF-16 names. */
+   to LLVM, which opens files and runs programs with UTF-16 names. MSVC
+   calls wmain by itself. MinGW would need -municode. */
 int wmain(int argc, wchar_t *wargv[]) {
   std::vector<std::string> args(argc);
   std::vector<char *> argv(argc + 1, nullptr);

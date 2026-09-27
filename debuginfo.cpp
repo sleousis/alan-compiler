@@ -34,7 +34,7 @@ DebugInfo *di_begin(Module &m, const char *filePath) {
   sys::fs::make_absolute(path);
   sys::path::remove_dots(path, true);
   d->file = d->b.createFile(sys::path::filename(path), sys::path::parent_path(path));
-  d->b.createCompileUnit(DISourceLanguageName(dwarf::DW_LANG_C), d->file, "alanc",
+  d->b.createCompileUnit(DISourceLanguageName(dwarf::DW_LANG_C), d->file, ALAN_DWARF_PRODUCER,
                          /*isOptimized*/ false, "", 0);
   d->intTy = d->b.createBasicType("int", 32, dwarf::DW_ATE_signed);
   d->byteTy = d->b.createBasicType("byte", 8, dwarf::DW_ATE_unsigned_char);
