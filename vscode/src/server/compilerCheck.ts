@@ -39,10 +39,11 @@ export function compilerDiagnostics(stderr: string, fileBase: string, text: stri
  * Runs `alanc check` on file, whose saved content is text. Returns
  * undefined when the compiler could not run, did not finish in time or was
  * aborted, so the caller keeps what it showed before. log hears why,
- * except for an abort.
+ * except for an abort. onMissing hears that the compiler is not there.
  */
 export async function checkFile(
-  c: CompilerRef, file: string, text: string, opts: { signal?: AbortSignal; log?: (line: string) => void } = {},
+  c: CompilerRef, file: string, text: string,
+  opts: { signal?: AbortSignal; log?: (line: string) => void; onMissing?: () => void } = {},
 ): Promise<Diagnostic[] | undefined> {
   const log = opts.log ?? (() => {});
   let cl: { cmd: string; args: string[] };
@@ -54,9 +55,14 @@ export async function checkFile(
   }
   const r = await runCompiler(cl.cmd, cl.args, { timeoutMs: CHECK_TIMEOUT_MS, signal: opts.signal });
   if (r.failure === "aborted") return undefined;
+  // Inside WSL a missing alanc makes the shell exit with status 127.
+  if (r.failure === "missing" || (c.wsl && r.code === 127)) {
+    opts.onMissing?.();
+    log(`Check of ${file} failed: ${c.wsl ? c.exe : cl.cmd} not found`);
+    return undefined;
+  }
   if (r.failure) {
-    const why = r.failure === "timeout" ? `no answer in ${CHECK_TIMEOUT_MS / 1000} s`
-      : r.failure === "missing" ? `${cl.cmd} not found` : r.detail ?? "unknown error";
+    const why = r.failure === "timeout" ? `no answer in ${CHECK_TIMEOUT_MS / 1000} s` : r.detail ?? "unknown error";
     log(`Check of ${file} failed: ${why}`);
     return undefined;
   }

@@ -1,5 +1,5 @@
-// The Run, Build and Show IR commands, the alan task type, and the
-// compiler's diagnostics that go to the language server.
+// The Run, Build, Show IR, install and removal commands, the alan task
+// type, and the compiler's diagnostics that go to the language server.
 import { statSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -10,9 +10,11 @@ import {
   CompilerRef, buildOutputPath, commandLine, failureSummary, findCompiler, forgetCompiler, needsSaveAs, runCompiler,
   stripAnsi,
 } from "./compiler";
+import { GITHUB, install, installedCompilerPath, uninstall, wslInstallCommand, wslUninstallCommand } from "./installer";
 
 const BUILD_TIMEOUT_MS = 120_000;
 const IR_TIMEOUT_MS = 60_000;
+const WSL_INSTALL_TIMEOUT_MS = 600_000;
 
 /**
  * Sends the compiler's diagnostics to the language server, which keeps them
@@ -58,7 +60,9 @@ export class CompilerProblems {
     this.running.set(key, abort);
     const version = doc.version;
     try {
-      const diagnostics = await checkFile(ref, doc.uri.fsPath, doc.getText(), { signal: abort.signal, log: this.log });
+      const diagnostics = await checkFile(ref, doc.uri.fsPath, doc.getText(), {
+        signal: abort.signal, log: this.log, onMissing: forgetCompiler,
+      });
       if (!diagnostics || doc.isClosed || doc.version !== version || this.generation.get(key) !== gen) return;
       this.set(doc, diagnostics);
     } finally {
@@ -304,14 +308,117 @@ function taskProvider(host: Host): vscode.TaskProvider {
   };
 }
 
+/** True while an install or removal runs, so two never overlap. */
+let busy = false;
+
+function useWsl(): boolean {
+  return process.platform === "win32" && vscode.workspace.getConfiguration("alan").get<boolean>("useWsl", false);
+}
+
+/** Runs an install or removal command inside WSL and logs its output. Returns why it failed, if it did. */
+async function runInWsl(host: Host, title: string, c: { cmd: string; args: string[] }): Promise<string | undefined> {
+  const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title },
+    () => runCompiler(c.cmd, c.args, { timeoutMs: WSL_INSTALL_TIMEOUT_MS }));
+  const out = stripAnsi(r.stdout + r.stderr).trimEnd();
+  if (out) host.output.appendLine(out);
+  if (r.failure === "missing") return "WSL is not available. Install WSL or turn off the alan.useWsl setting.";
+  if (r.failure === "timeout") return "it took too long.";
+  if (r.failure) return r.detail ?? "unknown error.";
+  if (r.code !== 0) return stripAnsi(r.stderr).trim().split(/\r?\n/).pop() || `exit status ${r.code}.`;
+  return undefined;
+}
+
+function reportError(host: Host, what: string, e: unknown): void {
+  const message = e instanceof Error ? e.message : String(e);
+  host.output.appendLine(`${what} failed: ${message}`);
+  void vscode.window.showErrorMessage(message);
+}
+
+async function installCompiler(host: Host): Promise<void> {
+  if (busy) {
+    void vscode.window.showInformationMessage("The Alan compiler is already being installed or removed.");
+    return;
+  }
+  busy = true;
+  try {
+    if (useWsl()) {
+      const failed = await runInWsl(host, "Installing the Alan compiler in WSL", wslInstallCommand());
+      forgetCompiler();
+      if (failed) reportError(host, "Install in WSL", `Installing the Alan compiler in WSL failed: ${failed}`);
+      else void vscode.window.showInformationMessage("Installed the Alan compiler in WSL.");
+      return;
+    }
+    const storage = host.context.globalStorageUri.fsPath;
+    try {
+      const r = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Installing the Alan compiler", cancellable: true },
+        (progress, token) => {
+          const abort = new AbortController();
+          token.onCancellationRequested(() => abort.abort());
+          let last = 0;
+          return install(storage, GITHUB, process.platform, process.arch, (message, pct) => {
+            progress.report({ message, increment: pct - last });
+            last = pct;
+          }, abort.signal);
+        });
+      forgetCompiler();
+      host.output.appendLine(`Installed Alan ${r.tag} at ${r.alanc}`);
+      const custom = vscode.workspace.getConfiguration("alan").get<string>("compilerPath", "").trim();
+      void vscode.window.showInformationMessage(custom
+        ? `Installed Alan ${r.tag}. The alan.compilerPath setting still chooses ${custom}.`
+        : `Installed Alan ${r.tag}.`);
+    } catch (e) {
+      forgetCompiler();
+      reportError(host, "Install", e);
+    }
+  } finally {
+    busy = false;
+  }
+}
+
+async function uninstallCompiler(host: Host): Promise<void> {
+  if (busy) {
+    void vscode.window.showInformationMessage("The Alan compiler is already being installed or removed.");
+    return;
+  }
+  const wsl = useWsl();
+  const storage = host.context.globalStorageUri.fsPath;
+  if (!wsl && !installedCompilerPath(storage, process.platform)) {
+    void vscode.window.showInformationMessage("There is no installed Alan compiler to remove.");
+    return;
+  }
+  const pick = await vscode.window.showWarningMessage(
+    wsl ? "Remove the Alan compiler installed in WSL?" : "Remove the installed Alan compiler?", { modal: true }, "Remove");
+  if (pick !== "Remove" || busy) return;
+  busy = true;
+  try {
+    if (wsl) {
+      const failed = await runInWsl(host, "Removing the Alan compiler from WSL", wslUninstallCommand());
+      forgetCompiler();
+      if (failed) reportError(host, "Removal in WSL", `Removing the Alan compiler from WSL failed: ${failed}`);
+      else void vscode.window.showInformationMessage("Removed the Alan compiler from WSL.");
+      return;
+    }
+    try {
+      await uninstall(storage);
+      forgetCompiler();
+      void vscode.window.showInformationMessage("Removed the installed Alan compiler.");
+    } catch (e) {
+      forgetCompiler();
+      reportError(host, "Removal", e);
+    }
+  } finally {
+    busy = false;
+  }
+}
+
 export function registerCommands(host: Host): void {
-  const notYet = () => vscode.window.showInformationMessage("Installing the Alan compiler from VS Code is not available yet.");
   host.context.subscriptions.push(
     vscode.commands.registerCommand("alan.run", (arg?: unknown) => run(host, arg)),
     vscode.commands.registerCommand("alan.build", (arg?: unknown) => build(host, arg)),
     vscode.commands.registerCommand("alan.showIr", (arg?: unknown) => showIr(host, arg)),
-    vscode.commands.registerCommand("alan.install", notYet),
-    vscode.commands.registerCommand("alan.uninstall", notYet),
+    vscode.commands.registerCommand("alan.install", () => installCompiler(host)),
+    vscode.commands.registerCommand("alan.uninstall", () => uninstallCompiler(host)),
     vscode.tasks.registerTaskProvider("alan", taskProvider(host)),
     { dispose: () => { for (const w of runWatchers) w.dispose(); runWatchers.clear(); } },
   );

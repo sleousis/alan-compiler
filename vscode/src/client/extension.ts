@@ -1,12 +1,13 @@
 // Activates the extension: registers the commands and the alan task type,
 // starts the language server once an Alan document is open, checks saved
 // files with the compiler, and offers to install the compiler when it is
-// missing.
+// missing or to update an installed copy that is too old.
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from "vscode-languageclient/node";
 import { CompilerProblems, offerInstall, registerCommands } from "./commands";
 import { findCompiler, forgetCompiler } from "./compiler";
+import { installedTag, isOlderTag, MIN_COMPILER } from "./installer";
 
 let client: LanguageClient | undefined;
 let started: Promise<void> | undefined;
@@ -56,6 +57,20 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
   for (const doc of vscode.workspace.textDocuments) void alanOpened(doc);
+  void offerUpdate(context);
+}
+
+/** Offers to update the installed compiler when it is older than MIN_COMPILER and in use. */
+async function offerUpdate(context: vscode.ExtensionContext): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration("alan");
+  if (cfg.get<string>("compilerPath", "").trim()) return;
+  if (process.platform === "win32" && cfg.get<boolean>("useWsl", false)) return;
+  const tag = installedTag(context.globalStorageUri.fsPath);
+  if (!tag || !isOlderTag(tag, MIN_COMPILER)) return;
+  const pick = await vscode.window.showInformationMessage(
+    `The installed Alan compiler ${tag} is older than ${MIN_COMPILER}, which this extension needs. Update it now?`,
+    "Update", "Not now");
+  if (pick === "Update") await vscode.commands.executeCommand("alan.install");
 }
 
 export async function deactivate(): Promise<void> {

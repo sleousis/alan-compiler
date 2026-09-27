@@ -224,6 +224,13 @@ describe("checkFile", () => {
     assert.equal(lines.length, 1);
     assert.match(lines[0], /failed: no-such-alanc-here not found/);
   });
+  it("tells onMissing that the compiler is gone, and only then", async () => {
+    let missing = 0;
+    await checkFile({ exe: "no-such-alanc-here", wsl: false }, file, "", { onMissing: () => missing++ });
+    assert.equal(missing, 1);
+    await checkFile(node, file, "a\n", { onMissing: () => missing++ });
+    assert.equal(missing, 1);
+  });
   it("logs a path WSL cannot open", async () => {
     const lines: string[] = [];
     assert.equal(await checkFile({ exe: "alanc", wsl: true }, "\\\\server\\share\\h.alan", "", { log: (l) => lines.push(l) }), undefined);
