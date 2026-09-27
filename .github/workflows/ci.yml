@@ -48,9 +48,13 @@ jobs:
           - platform: macos-x64
             os: macos-26-intel
             zig: x86_64-macos
+            llvm-arch: x86_64
+            llvm-cache: 2
           - platform: macos-arm64
             os: macos-latest
             zig: aarch64-macos
+            llvm-arch: arm64
+            llvm-cache: 1
     runs-on: ${{ matrix.os }}
     container:
       image: ${{ matrix.container || '' }}
@@ -133,15 +137,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sh tools/build-linux.sh
 
-      # Building LLVM takes about an hour. Bump the -2 in the key when
+      # Building LLVM takes about an hour. Bump llvm-cache in the matrix when
       # build_llvm_from_source in tools/build-macos.sh changes.
       - name: Restore LLVM built from source
         id: llvm-cache
-        if: matrix.platform == 'macos-x64'
+        if: runner.os == 'macOS'
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/llvm-*-x86_64-macos
-          key: llvm-src-macos-x64-${{ steps.versions.outputs.llvm }}-2
+          path: ${{ runner.temp }}/llvm-*-${{ matrix.llvm-arch }}-macos
+          key: llvm-src-${{ matrix.platform }}-${{ steps.versions.outputs.llvm }}-${{ matrix.llvm-cache }}
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
@@ -149,9 +153,9 @@ jobs:
 
       - name: Check for LLVM built from source
         id: llvm-built
-        if: always() && matrix.platform == 'macos-x64' && steps.llvm-cache.outputs.cache-hit != 'true'
+        if: always() && runner.os == 'macOS' && steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
-          if ls "$RUNNER_TEMP"/llvm-*-x86_64-macos/complete >/dev/null 2>&1; then
+          if ls "$RUNNER_TEMP"/llvm-*-${{ matrix.llvm-arch }}-macos/complete >/dev/null 2>&1; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -159,8 +163,8 @@ jobs:
         if: always() && steps.llvm-built.outputs.found == 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/llvm-*-x86_64-macos
-          key: llvm-src-macos-x64-${{ steps.versions.outputs.llvm }}-2
+          path: ${{ runner.temp }}/llvm-*-${{ matrix.llvm-arch }}-macos
+          key: llvm-src-${{ matrix.platform }}-${{ steps.versions.outputs.llvm }}-${{ matrix.llvm-cache }}
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
