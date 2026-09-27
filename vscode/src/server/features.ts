@@ -11,3 +11,4 @@ export { definition, documentSymbols } from "./symbols";
 export type { OutlineSymbol } from "./symbols";
 export { formatDocument, formatRange } from "./format";
 export type { FormatOptions } from "./format";
+export { prepareRename, references, rename } from "./rename";

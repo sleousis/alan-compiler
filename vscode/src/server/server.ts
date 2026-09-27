@@ -3,13 +3,14 @@
 // clean text per document, so completion still works while the current text
 // has a syntax error.
 import {
-  CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, DocumentSymbol, MarkupKind,
-  ProposedFeatures, SymbolKind, TextDocumentSyncKind, TextDocuments, TextEdit, createConnection,
+  CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, DocumentHighlight, DocumentSymbol, LSPErrorCodes,
+  Location, MarkupKind, ProposedFeatures, ResponseError, SymbolKind, TextDocumentSyncKind, TextDocuments, TextEdit,
+  WorkspaceEdit, createConnection,
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   CompletionEntry, OutlineSymbol, analyzeSource, completions, computeDiagnostics, definition, documentSymbols,
-  formatDocument, formatRange, hover, mergeDiagnostics, signatureHelp,
+  formatDocument, formatRange, hover, mergeDiagnostics, prepareRename, references, rename, signatureHelp,
 } from "./features";
 import { Analysis } from "./scopes";
 
@@ -92,6 +93,9 @@ connection.onInitialize(() => ({
     documentSymbolProvider: true,
     documentFormattingProvider: true,
     documentRangeFormattingProvider: true,
+    referencesProvider: true,
+    documentHighlightProvider: true,
+    renameProvider: { prepareProvider: true },
   },
 }));
 
@@ -185,6 +189,34 @@ connection.onDocumentRangeFormatting((p): TextEdit[] => guard("Range formatting"
   const doc = documents.get(p.textDocument.uri);
   const edit = doc && formatRange(doc.getText(), p.range, p.options);
   return edit ? [TextEdit.replace(edit.range, edit.newText)] : [];
+}));
+
+connection.onReferences((p): Location[] => guard("References", [], () => {
+  const doc = documents.get(p.textDocument.uri);
+  if (!doc) return [];
+  return references(doc.getText(), p.position, p.context.includeDeclaration).map((range) => ({ uri: doc.uri, range }));
+}));
+
+connection.onDocumentHighlight((p): DocumentHighlight[] => guard("Highlights", [], () => {
+  const doc = documents.get(p.textDocument.uri);
+  return doc ? references(doc.getText(), p.position, true).map((range) => ({ range })) : [];
+}));
+
+// A refused rename answers with an error, which the editor shows as the reason.
+connection.onPrepareRename((p) => guard("Prepare rename", null, () => {
+  const doc = documents.get(p.textDocument.uri);
+  if (!doc) return null;
+  const r = prepareRename(doc.getText(), p.position);
+  if ("error" in r) return new ResponseError(LSPErrorCodes.RequestFailed, r.error);
+  return r;
+}));
+
+connection.onRenameRequest((p) => guard<WorkspaceEdit | ResponseError | null>("Rename", null, () => {
+  const doc = documents.get(p.textDocument.uri);
+  if (!doc) return null;
+  const r = rename(doc.getText(), p.position, p.newName);
+  if ("error" in r) return new ResponseError(LSPErrorCodes.RequestFailed, r.error);
+  return { changes: { [doc.uri]: r.edits.map((e) => TextEdit.replace(e.range, e.newText)) } };
 }));
 
 documents.listen(connection);

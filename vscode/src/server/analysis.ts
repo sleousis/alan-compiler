@@ -46,7 +46,7 @@ export function scopeAtPosition(src: string, pos: Pos, fallback?: Analysis): Sco
 }
 
 /** Every declared symbol with a source range, each once. */
-function declarations(root: Scope): Sym[] {
+export function declarations(root: Scope): Sym[] {
   const out = new Set<Sym>();
   const stack = [root];
   while (stack.length) {
@@ -58,19 +58,24 @@ function declarations(root: Scope): Sym[] {
 }
 
 /**
- * The symbol named at a position, by a use or by its declaration. A position
- * right after a name also counts, when no name starts there.
+ * The name at a position, by a use or by its declaration, with the symbol it
+ * resolves to. A position right after a name also counts, when no name starts
+ * there.
  */
-export function symbolAt(src: string, pos: Pos): Sym | undefined {
-  const analysis = analyzeSource(src).analysis;
-  if (!analysis) return undefined;
+export function nameAt(analysis: Analysis, pos: Pos): { range: Range; sym?: Sym } | undefined {
   const named: { range: Range; sym?: Sym }[] = [
     ...analysis.references.map((r) => ({ range: r.range, sym: r.target })),
     ...declarations(analysis.root).map((sym) => ({ range: sym.range!, sym })),
   ];
   const inside = named.find((n) => comparePos(n.range.start, pos) <= 0 && comparePos(pos, n.range.end) < 0);
   const after = named.find((n) => comparePos(n.range.end, pos) === 0);
-  return (inside ?? after)?.sym;
+  return inside ?? after;
+}
+
+/** The symbol named at a position, as nameAt finds it. */
+export function symbolAt(src: string, pos: Pos): Sym | undefined {
+  const analysis = analyzeSource(src).analysis;
+  return analysis && nameAt(analysis, pos)?.sym;
 }
 
 /** A declaration as Alan text: "x : int[4]", "a : reference int" or a function header. */

@@ -1,12 +1,14 @@
-// Activates the extension: registers the commands and the alan task type,
-// starts the language server once an Alan document is open, checks saved
-// files with the compiler, and offers to install the compiler when it is
-// missing or to update an installed copy that is too old.
+// Activates the extension: registers the commands, the alan task type and
+// the alan debug type, starts the language server once an Alan document is
+// open, checks saved files with the compiler, and offers to install the
+// compiler when it is missing or to update an installed copy that is too old.
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from "vscode-languageclient/node";
-import { CompilerProblems, offerInstall, registerCommands } from "./commands";
-import { findCompiler, forgetCompiler } from "./compiler";
+import { compilerDiagnostics } from "../server/compilerCheck";
+import { CompilerProblems, Host, offerInstall, registerCommands, reportFailure, savedDocument, useWsl } from "./commands";
+import { findCompiler, forgetCompiler, runCompiler } from "./compiler";
+import { AlanDebugConfigurationProvider, DebugBuilds, DebugDeps, SavedSource, dynamicProvider } from "./debug";
 import { installedTag, isOlderTag, MIN_COMPILER } from "./installer";
 
 let client: LanguageClient | undefined;
@@ -24,7 +26,9 @@ export function activate(context: vscode.ExtensionContext): void {
   client = lc;
 
   const problems = new CompilerProblems(lc, (line) => output.appendLine(line));
-  registerCommands({ context, problems, output });
+  const host: Host = { context, problems, output };
+  registerCommands(host);
+  registerDebugging(host);
 
   // The task service activates the extension for the alan task type in any
   // workspace, so the server starts only when an Alan document shows up.
@@ -58,6 +62,74 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   for (const doc of vscode.workspace.textDocuments) void alanOpened(doc);
   void offerUpdate(context);
+}
+
+/** A debug build may link the C library for debugging first, which takes a while once. */
+const DEBUG_BUILD_TIMEOUT_MS = 600_000;
+
+function sameFile(a: string, b: string): boolean {
+  const x = path.resolve(a);
+  const y = path.resolve(b);
+  return process.platform === "win32" || process.platform === "darwin" ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+function savedSource(host: Host, doc: vscode.TextDocument): SavedSource {
+  return {
+    file: doc.uri.fsPath,
+    showProblems: (stderr) => host.problems.set(doc, compilerDiagnostics(stderr, path.basename(doc.uri.fsPath), doc.getText())),
+  };
+}
+
+/**
+ * Registers the alan debug type. Each debug build goes when its session
+ * ends or never starts, and builds left by an earlier VS Code go now.
+ */
+function registerDebugging(host: Host): void {
+  const builds = new DebugBuilds(undefined, (line) => host.output.appendLine(line));
+  void builds.sweep();
+  const deps: DebugDeps = {
+    platform: process.platform,
+    useWsl,
+    saveActive: async () => {
+      const doc = await savedDocument(undefined);
+      return doc && savedSource(host, doc);
+    },
+    save: async (file) => {
+      const open = vscode.workspace.textDocuments.find((d) => d.uri.scheme === "file" && sameFile(d.uri.fsPath, file));
+      const doc = await savedDocument(open?.uri ?? vscode.Uri.file(file));
+      return doc && savedSource(host, doc);
+    },
+    findCompiler: async () => {
+      const ref = await findCompiler(host.context);
+      if (!ref) void offerInstall();
+      return ref;
+    },
+    build: async (cmd, args, cwd, token) => vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Building for debugging", cancellable: true },
+      (_progress, cancel) => {
+        const abort = new AbortController();
+        const stops = [cancel.onCancellationRequested(() => abort.abort())];
+        if (token) stops.push(token.onCancellationRequested(() => abort.abort()));
+        return runCompiler(cmd, args, { timeoutMs: DEBUG_BUILD_TIMEOUT_MS, cwd, signal: abort.signal })
+          .finally(() => stops.forEach((s) => s.dispose()));
+      }),
+    report: (detail, missing, stderr) => reportFailure(host, "Debug build", detail, missing, stderr),
+    showError: (message) => void vscode.window.showErrorMessage(message),
+    builds,
+  };
+  const provider = new AlanDebugConfigurationProvider(deps);
+  host.context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider("alan", provider),
+    vscode.debug.registerDebugConfigurationProvider("alan", dynamicProvider(provider),
+      vscode.DebugConfigurationProviderTriggerKind.Dynamic),
+    vscode.debug.onDidStartDebugSession((session) => {
+      if (session.type === "lldb") builds.started(session.configuration.program);
+    }),
+    vscode.debug.onDidTerminateDebugSession((session) => {
+      if (session.type === "lldb") void builds.ended(session.configuration.program);
+    }),
+    { dispose: () => builds.removeAll() },
+  );
 }
 
 /** Offers to update the installed compiler when it is older than MIN_COMPILER and in use. */

@@ -12,6 +12,8 @@ import {
 } from "../../src/client/installer";
 
 const FIXTURES = path.join(__dirname, "..", "fixtures", "fake-release");
+// Windows can hold a file open for a moment after a download or unpack ends.
+const RM_RETRY = { recursive: true, force: true, maxRetries: 10, retryDelay: 100 };
 
 /** Serves the files of FIXTURES, or the bodies of routes first, on 127.0.0.1. */
 function serve(routes: Map<string, Buffer> = new Map()): Promise<{ base: string; hits: string[]; close: () => Promise<void> }> {
@@ -40,7 +42,12 @@ function serve(routes: Map<string, Buffer> = new Map()): Promise<{ base: string;
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      resolve({ base, hits, close: () => new Promise((r) => server.close(() => r())) });
+      resolve({
+        base, hits, close: () => new Promise((r) => {
+          server.closeAllConnections();
+          server.close(() => r());
+        }),
+      });
     });
   });
 }
@@ -83,19 +90,26 @@ describe("installer", () => {
   let tmp: string;
   let srv: Awaited<ReturnType<typeof serve>>;
   let fake: ReleaseSource;
+  // Aborted after each test, so an install still running after a timeout
+  // stops before the folder is removed.
+  let ac: AbortController;
+  const installHere = (dir: string, src: ReleaseSource, platform: NodeJS.Platform, arch: string,
+    progress?: (msg: string, pct: number) => void) => install(dir, src, platform, arch, progress, ac.signal);
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "alan-install-"));
+    ac = new AbortController();
     srv = await serve();
     fake = source(srv.base);
   });
   afterEach(async () => {
+    ac.abort();
     await srv.close();
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, RM_RETRY);
   });
 
   it("installs, finds and removes the compiler", async () => {
-    const r = await install(tmp, fake, process.platform, process.arch);
+    const r = await installHere(tmp, fake, process.platform, process.arch);
     assert.equal(r.tag, "v2.0.0");
     assert.ok(fs.existsSync(r.alanc));
     assert.equal(installedCompilerPath(tmp, process.platform), r.alanc);
@@ -107,7 +121,7 @@ describe("installer", () => {
   });
 
   it("puts the compiler at alan/bin/alanc inside the storage folder", async () => {
-    const r = await install(tmp, fake, here.platform, here.arch);
+    const r = await installHere(tmp, fake, here.platform, here.arch);
     const exe = process.platform === "win32" ? "alanc.exe" : "alanc";
     assert.equal(r.alanc, path.join(tmp, "alan", "bin", exe));
     assert.match(fs.readFileSync(r.alanc, "utf8"), /^fake alanc for /);
@@ -118,7 +132,7 @@ describe("installer", () => {
     fs.mkdirSync(path.join(tmp, "alan", "bin"), { recursive: true });
     fs.writeFileSync(path.join(tmp, "alan", "stale.txt"), "old");
     fs.writeFileSync(path.join(tmp, "alan", "VERSION"), "v1.9.0\n");
-    const r = await install(tmp, fake, here.platform, here.arch);
+    const r = await installHere(tmp, fake, here.platform, here.arch);
     assert.equal(installedTag(tmp), "v2.0.0");
     assert.ok(!fs.existsSync(path.join(tmp, "alan", "stale.txt")));
     assert.ok(fs.existsSync(r.alanc));
@@ -127,13 +141,13 @@ describe("installer", () => {
 
   it("creates a storage folder that does not exist yet", async () => {
     const deep = path.join(tmp, "not", "there");
-    const r = await install(deep, fake, here.platform, here.arch);
+    const r = await installHere(deep, fake, here.platform, here.arch);
     assert.ok(fs.existsSync(r.alanc));
   });
 
   it("reports progress from 0 to 100", async () => {
     const seen: number[] = [];
-    await install(tmp, fake, here.platform, here.arch, (msg, pct) => {
+    await installHere(tmp, fake, here.platform, here.arch, (msg, pct) => {
       assert.ok(msg.length > 0);
       seen.push(pct);
     });
@@ -143,7 +157,7 @@ describe("installer", () => {
   });
 
   it("follows redirects", async () => {
-    const r = await install(tmp, { ...fake, apiLatest: `${srv.base}/redirect/latest.json` }, here.platform, here.arch);
+    const r = await installHere(tmp, { ...fake, apiLatest: `${srv.base}/redirect/latest.json` }, here.platform, here.arch);
     assert.equal(r.tag, "v2.0.0");
   });
 
@@ -156,17 +170,17 @@ describe("installer", () => {
       apiLatest: `${srv.base}/latest.json`,
       download: (tag, a) => `${srv.base}${a === "SHA256SUMS" ? "/bad" : ""}/${tag}/${a}`,
     };
-    await assert.rejects(install(tmp, fakeCorrupt, process.platform, process.arch),
+    await assert.rejects(installHere(tmp, fakeCorrupt, process.platform, process.arch),
       { message: "The download did not match its checksum. Nothing was installed." });
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
 
   it("keeps the old copy when the new one fails", async () => {
-    await install(tmp, fake, here.platform, here.arch);
+    await installHere(tmp, fake, here.platform, here.arch);
     const asset = assetName("v2.0.0", here.platform, here.arch);
     await srv.close();
     srv = await serve(new Map([["/v2.0.0/SHA256SUMS", Buffer.from(`${"1".repeat(64)}  ${asset}\n`)]]));
-    await assert.rejects(install(tmp, source(srv.base), here.platform, here.arch), /checksum/);
+    await assert.rejects(installHere(tmp, source(srv.base), here.platform, here.arch), /checksum/);
     assert.deepEqual(fs.readdirSync(tmp), ["alan"]);
     assert.equal(installedTag(tmp), "v2.0.0");
   });
@@ -174,7 +188,7 @@ describe("installer", () => {
   it("fails clearly when offline", async () => {
     await srv.close();
     const unreachable = source(srv.base);
-    await assert.rejects(install(tmp, unreachable, process.platform, process.arch),
+    await assert.rejects(installHere(tmp, unreachable, process.platform, process.arch),
       { message: "Could not reach GitHub. Check your connection and try again." });
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
@@ -195,7 +209,7 @@ describe("installer", () => {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
     try {
       const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      await assert.rejects(install(tmp, source(base), here.platform, here.arch), /Could not reach GitHub/);
+      await assert.rejects(installHere(tmp, source(base), here.platform, here.arch), /Could not reach GitHub/);
       assert.deepEqual(fs.readdirSync(tmp), []);
     } finally {
       await new Promise((r) => server.close(r));
@@ -205,7 +219,7 @@ describe("installer", () => {
   it("says there is no release for this platform when the release lacks SHA256SUMS", async () => {
     await srv.close();
     srv = await serve(new Map([["/bare/latest.json", Buffer.from('{"tag_name":"v2.0.1"}')]]));
-    await assert.rejects(install(tmp, source(srv.base, "/bare"), here.platform, here.arch),
+    await assert.rejects(installHere(tmp, source(srv.base, "/bare"), here.platform, here.arch),
       { message: "No Alan release for this platform." });
     assert.ok(srv.hits.includes("/bare/v2.0.1/SHA256SUMS"));
     assert.deepEqual(fs.readdirSync(tmp), []);
@@ -215,7 +229,7 @@ describe("installer", () => {
     // Like GitHub today: v1.0.0 has no bundles.
     await srv.close();
     srv = await serve(new Map([["/old/latest.json", Buffer.from('{"tag_name":"v1.0.0"}')]]));
-    await assert.rejects(install(tmp, source(srv.base, "/old"), here.platform, here.arch),
+    await assert.rejects(installHere(tmp, source(srv.base, "/old"), here.platform, here.arch),
       { message: "No compatible Alan release yet. The extension needs v2.0.0 or later." });
     assert.deepEqual(srv.hits, ["/old/latest.json"]);
     assert.deepEqual(fs.readdirSync(tmp), []);
@@ -227,13 +241,13 @@ describe("installer", () => {
       ["/other/latest.json", Buffer.from('{"tag_name":"v2.0.0"}')],
       ["/other/v2.0.0/SHA256SUMS", Buffer.from(`${"3".repeat(64)}  alan-v2.0.0-plan9-x64.tar.gz\n`)],
     ]));
-    await assert.rejects(install(tmp, source(srv.base, "/other"), here.platform, here.arch),
+    await assert.rejects(installHere(tmp, source(srv.base, "/other"), here.platform, here.arch),
       { message: "No Alan release for this platform." });
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
 
   it("refuses an unsupported platform before downloading anything", async () => {
-    await assert.rejects(install(tmp, fake, "sunos", "x64"), { message: "No Alan release for this platform." });
+    await assert.rejects(installHere(tmp, fake, "sunos", "x64"), { message: "No Alan release for this platform." });
     assert.deepEqual(srv.hits, []);
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
@@ -241,7 +255,7 @@ describe("installer", () => {
   it("refuses a tag that is not a version", async () => {
     await srv.close();
     srv = await serve(new Map([["/weird/latest.json", Buffer.from('{"tag_name":"../../x"}')]]));
-    await assert.rejects(install(tmp, source(srv.base, "/weird"), here.platform, here.arch), /release/);
+    await assert.rejects(installHere(tmp, source(srv.base, "/weird"), here.platform, here.arch), /release/);
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
 
@@ -253,16 +267,16 @@ describe("installer", () => {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
     try {
       const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      await assert.rejects(install(tmp, source(base), here.platform, here.arch), /GitHub answered with HTTP 403/);
+      await assert.rejects(installHere(tmp, source(base), here.platform, here.arch), /GitHub answered with HTTP 403/);
     } finally {
       await new Promise((r) => server.close(r));
     }
   });
 
   it("stops and cleans up when cancelled", async () => {
-    const ac = new AbortController();
-    ac.abort();
-    await assert.rejects(install(tmp, fake, here.platform, here.arch, undefined, ac.signal), /cancelled/);
+    const cancel = new AbortController();
+    cancel.abort();
+    await assert.rejects(install(tmp, fake, here.platform, here.arch, undefined, cancel.signal), /cancelled/);
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
 
@@ -274,7 +288,7 @@ describe("installer", () => {
       ["/v2.0.0/SHA256SUMS", Buffer.from(`${sha256(evil)}  ${asset}\n`)],
       [`/v2.0.0/${asset}`, evil],
     ]));
-    await assert.rejects(install(tmp, source(srv.base), here.platform, here.arch), /unsafe path/);
+    await assert.rejects(installHere(tmp, source(srv.base), here.platform, here.arch), /unsafe path/);
     assert.deepEqual(fs.readdirSync(tmp), []);
     assert.ok(!fs.existsSync(path.join(tmp, "..", "escaped.txt")));
   });
@@ -294,7 +308,7 @@ describe("installer", () => {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
     try {
       const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      await assert.rejects(install(tmp, source(base), here.platform, here.arch),
+      await assert.rejects(installHere(tmp, source(base), here.platform, here.arch),
         { message: "The download is too large or unsafe. Nothing was installed." });
       assert.deepEqual(fs.readdirSync(tmp), []);
     } finally {
@@ -327,7 +341,7 @@ describe("installer", () => {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
     try {
       const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      await assert.rejects(install(tmp, { ...source(base), maxDownload: 300 * 1024 }, here.platform, here.arch),
+      await assert.rejects(installHere(tmp, { ...source(base), maxDownload: 300 * 1024 }, here.platform, here.arch),
         { message: "The download is too large or unsafe. Nothing was installed." });
       assert.deepEqual(fs.readdirSync(tmp), []);
       assert.ok(sent < 64 * 1024 * 1024, `the server sent all ${sent} bytes`);
@@ -338,11 +352,11 @@ describe("installer", () => {
   });
 
   it("puts back a copy that a failed swap left as alan.old", async () => {
-    await install(tmp, fake, here.platform, here.arch);
+    await installHere(tmp, fake, here.platform, here.arch);
     fs.renameSync(path.join(tmp, "alan"), path.join(tmp, "alan.old"));
     // An install that fails still keeps the copy.
     await srv.close();
-    await assert.rejects(install(tmp, fake, here.platform, here.arch), /Could not reach/);
+    await assert.rejects(installHere(tmp, fake, here.platform, here.arch), /Could not reach/);
     assert.deepEqual(fs.readdirSync(tmp), ["alan"]);
     assert.equal(installedTag(tmp), "v2.0.0");
   });
@@ -362,7 +376,7 @@ describe("extractArchive", () => {
     dest = path.join(tmp, "inner", "out");
     fs.mkdirSync(dest, { recursive: true });
   });
-  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  afterEach(() => fs.rmSync(tmp, RM_RETRY));
 
   for (const kind of ["zip", "tar.gz"] as const) {
     it(`unpacks a ${kind} bundle without its alan/ folder`, async () => {

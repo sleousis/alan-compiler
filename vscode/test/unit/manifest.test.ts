@@ -35,4 +35,14 @@ describe("extension manifest", () => {
     const prefixes = Object.values(readJson(entry.path)).map((s) => (s as { prefix: string }).prefix);
     assert.deepEqual(prefixes.sort(), ["func", "if", "ifelse", "while"]);
   });
+
+  it("debugs Alan through CodeLLDB", () => {
+    assert.deepEqual(manifest.extensionDependencies, ["vadimcn.vscode-lldb"]);
+    assert.deepEqual(manifest.contributes.breakpoints, [{ language: "alan" }]);
+    const [dbg] = manifest.contributes.debuggers;
+    assert.equal(dbg.type, "alan");
+    assert.deepEqual(dbg.languages, ["alan"]);
+    assert.deepEqual(dbg.initialConfigurations, [{ type: "alan", request: "launch", name: "Debug Alan file", program: "${file}" }]);
+    for (const e of ["onDebugResolve:alan", "onDebugDynamicConfigurations:alan"]) assert.ok(manifest.activationEvents.includes(e), e);
+  });
 });
