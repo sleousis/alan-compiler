@@ -11,6 +11,27 @@ A compiler for Alan, a small Pascal/C-like teaching language. It was written as 
 - Example Alan programs in `Examples/`.
 - The language specification (`alan2018.pdf`).
 
+## Install
+
+One command installs the latest release. It needs nothing else, because the bundle carries the Zig toolchain that links programs.
+
+```
+Windows (PowerShell):  irm https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.ps1 | iex
+Linux and macOS:       curl -fsSL https://raw.githubusercontent.com/sleousis/alan-compiler/master/install/install.sh | sh
+```
+
+On Windows the compiler goes to `%LOCALAPPDATA%\alan` and its `bin` folder is added to your user PATH. On Linux and macOS it goes to `~/.local/share/alan` and `alanc` is linked into `~/.local/bin`. The installers check the download against the release's `SHA256SUMS` and print how to uninstall. Set `ALAN_VERSION` (for example `v2.0.0`) to install another release.
+
+Then run a program:
+
+```
+alanc run hello.alan                 compile, link and run the program
+alanc build hello.alan -o hello      compile and link an executable
+alanc check hello.alan               check the program for errors only
+```
+
+Add `-O` to `run` or `build` to turn on optimization. The first program takes a minute or two longer, because Zig prepares its C library once.
+
 ## Download
 
 The [Releases page](https://github.com/sleousis/alan-compiler/releases) has a ready-built compiler for Linux x86-64.

@@ -238,6 +238,108 @@ jobs:
           "$alanc" run Examples/HelloWorld.alan > "$smoke/out.txt"
           tr -d '\r' < "$smoke/out.txt" | cmp - tests/expected/HelloWorld.txt
 
+      # Lays the bundle out like a release for the installer tests below:
+      # v0.0.0-ci holds it with its checksum, v0.0.0-bad a damaged copy with
+      # the checksum of the good one, v0.0.0-none no bundle at all.
+      - name: Prepare a release folder for the installers
+        run: |
+          case "${{ matrix.platform }}" in windows-*) ext=zip ;; *) ext=tar.gz ;; esac
+          srv="$RUNNER_TEMP/srv/download"
+          rm -rf "$RUNNER_TEMP/srv"
+          mkdir -p "$srv/v0.0.0-ci" "$srv/v0.0.0-bad" "$srv/v0.0.0-none"
+          good="alan-v0.0.0-ci-${{ matrix.platform }}.$ext"
+          bad="alan-v0.0.0-bad-${{ matrix.platform }}.$ext"
+          cp "out/alan-$VERSION-${{ matrix.platform }}.$ext" "$srv/v0.0.0-ci/$good"
+          head -c 1000000 "$srv/v0.0.0-ci/$good" > "$srv/v0.0.0-bad/$bad"
+          sum=$($PYTHON -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$srv/v0.0.0-ci/$good" | tr -d '\r')
+          printf '%s  %s\n' "$sum" "$good" > "$srv/v0.0.0-ci/SHA256SUMS"
+          printf '%s  %s\n' "$sum" "$bad" > "$srv/v0.0.0-bad/SHA256SUMS"
+          : > "$srv/v0.0.0-none/SHA256SUMS"
+
+      # Installs the bundle from a local server the way a user would, then
+      # runs alanc from a shell with a clean environment.
+      - name: Test the installer (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          unset ALAN_ZIG ALAN_RUNTIME
+          $PYTHON -m http.server 8000 --bind 127.0.0.1 --directory "$RUNNER_TEMP/srv" > "$RUNNER_TEMP/http.log" 2>&1 &
+          trap "kill $!" EXIT
+          for i in $(seq 50); do curl -fs -o /dev/null http://127.0.0.1:8000/ && break; sleep 0.2; done
+          export ALAN_BASE_URL=http://127.0.0.1:8000
+          expect_failure() {
+            code=0
+            ALAN_VERSION=$1 sh install/install.sh 2> "$RUNNER_TEMP/err.txt" || code=$?
+            cat "$RUNNER_TEMP/err.txt"
+            test "$code" -eq 1
+            grep -q "$2" "$RUNNER_TEMP/err.txt"
+            test ! -e "$HOME/.local/share/alan"
+            test ! -e "$HOME/.local/share/alan.new"
+          }
+          expect_failure v0.0.0-none "Alan v0.0.0-none has no download for ${{ matrix.platform }}"
+          expect_failure v0.0.0-bad "Checksum mismatch"
+          ALAN_VERSION=v0.0.0-ci sh install/install.sh
+          # a second run replaces the first install
+          ALAN_VERSION=v0.0.0-ci sh install/install.sh
+          env -i HOME="$HOME" PATH="$HOME/.local/bin:/usr/bin:/bin" ZIG_GLOBAL_CACHE_DIR="$ZIG_GLOBAL_CACHE_DIR" \
+            sh -c 'test "$(command -v alanc)" = "$HOME/.local/bin/alanc" && alanc run Examples/HelloWorld.alan' \
+            > "$RUNNER_TEMP/installed.txt"
+          cmp "$RUNNER_TEMP/installed.txt" tests/expected/HelloWorld.txt
+
+      # Installs with PowerShell 7, then again with Windows PowerShell 5.1,
+      # which must pick the same platform and keep one PATH entry. A new
+      # shell reads PATH from the registry and runs alanc.
+      - name: Test the installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Remove-Item Env:ALAN_ZIG, Env:ALAN_RUNTIME -ErrorAction SilentlyContinue
+          $server = Start-Process $env:PYTHON -PassThru -NoNewWindow `
+            -ArgumentList '-m', 'http.server', '8000', '--bind', '127.0.0.1', '--directory', "$env:RUNNER_TEMP\srv" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\http.out" -RedirectStandardError "$env:RUNNER_TEMP\http.log"
+          $dest = "$env:LOCALAPPDATA\alan"
+          function Invoke-Installer($shell, $version) {
+            $env:ALAN_VERSION = $version
+            $out = & $shell -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 | Out-String
+            $code = $LASTEXITCODE
+            Write-Host $out
+            @{ Code = $code; Out = $out }
+          }
+          try {
+            for ($i = 0; $i -lt 50; $i++) {
+              try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ | Out-Null; break } catch { Start-Sleep -Milliseconds 200 }
+            }
+            $env:ALAN_BASE_URL = 'http://127.0.0.1:8000'
+            foreach ($case in @(@('v0.0.0-none', 'Alan v0.0.0-none has no download for ${{ matrix.platform }}.'),
+                                @('v0.0.0-bad', 'Checksum mismatch'))) {
+              $r = Invoke-Installer pwsh $case[0]
+              if ($r.Code -ne 1) { throw "exit code $($r.Code) for $($case[0])" }
+              if (-not $r.Out.Contains($case[1])) { throw "no message '$($case[1])'" }
+              if ((Test-Path $dest) -or (Test-Path "$dest.new")) { throw "a failed install left $dest behind" }
+            }
+            foreach ($shell in 'pwsh', 'powershell') {
+              $r = Invoke-Installer $shell 'v0.0.0-ci'
+              if ($r.Code -ne 0) { throw "$shell failed with exit code $($r.Code)" }
+              if (-not $r.Out.Contains('(${{ matrix.platform }})')) { throw "$shell picked the wrong platform" }
+            }
+          } finally {
+            Stop-Process $server
+          }
+          $bin = "$dest\bin"
+          $user = @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_.TrimEnd('\') -ieq $bin })
+          if ($user.Count -ne 1) { throw "the user PATH holds $bin $($user.Count) times" }
+          $machine = @([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';' | Where-Object { $_.TrimEnd('\') -ieq $bin })
+          if ($machine.Count -ne 0) { throw "the machine PATH holds $bin" }
+          pwsh -NoProfile -Command {
+            $env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + [Environment]::GetEnvironmentVariable('Path', 'Machine')
+            $found = (Get-Command alanc).Source
+            if ($found -ne "$env:LOCALAPPDATA\alan\bin\alanc.exe") { Write-Host "found $found"; exit 1 }
+            alanc run Examples/HelloWorld.alan > "$env:RUNNER_TEMP\installed.txt"
+            exit $LASTEXITCODE
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $got = [IO.File]::ReadAllText("$env:RUNNER_TEMP\installed.txt") -replace "`r", ''
+          if ($got -ne [IO.File]::ReadAllText("$PWD\tests\expected\HelloWorld.txt")) { "got: $got"; exit 1 }
+
       - uses: actions/upload-artifact@v7
         with:
           name: alan-${{ env.VERSION }}-${{ matrix.platform }}
