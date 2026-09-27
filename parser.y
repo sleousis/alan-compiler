@@ -74,6 +74,7 @@ bool opt;
 %type<a> local_def
 %type<a> var_def
 %type<a> compound_stmt
+%type<a> block
 %type<a> stmt_list
 %type<a> stmt
 %type<a> l_value
@@ -142,6 +143,13 @@ compound_stmt:
   '{' stmt_list '}' { $$ = $2; }
 ;
 
+/* A block that is a statement, not a function body. It is a node of its
+   own, so nested blocks count as nesting. The action after '{' keeps the
+   line of the '{'. */
+block:
+  '{' { $<n>$ = lineno; } stmt_list '}' { $$ = ast_block($3, $<n>2); }
+;
+
 stmt_list:
   /*nothing*/ { $$ = NULL; }
 | stmt stmt_list { $$ = ast_seq($1, $2,lineno); }
@@ -150,7 +158,7 @@ stmt_list:
 stmt:
   ';' { $$ = NULL; }
 | l_value "=" expr ';' { $$ = ast_ass($1, $3,lineno); }
-| compound_stmt { $$ = $1; }
+| block { $$ = $1; }
 | func_call ';' { $1->num = CALL_STATEMENT; $$ = $1; }
 | "if" '(' cond ')' stmt { $$ = ast_if($3, $5,lineno); }
 | "if" '(' cond ')' stmt "else" stmt { $$ = ast_ifelse(ast_if($3, $5,lineno), $7,lineno); }

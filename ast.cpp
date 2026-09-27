@@ -45,7 +45,7 @@ static ast ast_make (kind k, char *c, int n, ast l, ast r, Type_T t, int line) {
 const char* kinds[]={
 	"WHILE", "IF", "IFELSE", "SEQ", "RET", "PAR", "PARREF", "TYPE", "TYPEARR", "PROC", "VAR", "ASS", "ARREXPR", "FUNCALL", "FUNCDEF",
 	"ID", "CONST", "CHAR", "STRING", "BOOL", "PLUS", "MINUS", "TIMES", "DIV", "MOD", "NOT", "EQUALS", "NOTEQUALS", "LESSEQUALS", "GREATEQUALS",
-	"GREATER", "LESS", "AND", "OR"
+	"GREATER", "LESS", "AND", "OR", "BLOCK"
 };
 
 SymbolEntry* library[14];
@@ -162,6 +162,10 @@ ast ast_ifelse (ast l, ast r, int line) {
 
 ast ast_ret (ast l, int line) {
 	return ast_make(RET, NULL, 0, l, NULL, NULL, line);
+}
+
+ast ast_block (ast body, int line) {
+	return ast_make(BLOCK, NULL, 0, body, NULL, NULL, line);
 }
 
 ast ast_seq (ast l, ast r, int line) {
@@ -768,6 +772,26 @@ static LLVM_ATTRIBUTE_NOINLINE Value *compileChar (ast t) {
 	return c8(unescape(t->id)[0]);
 }
 
+// Compiles a statement list or a block. Lists and blocks inside it are
+// opened with a work list, not recursion, so neither long lists nor deeply
+// nested blocks use up the stack. Statements after a return are dead:
+// emitting them would put code after the ret terminator.
+static LLVM_ATTRIBUTE_NOINLINE Value *compileStatements (ast t) {
+	std::vector<ast> todo{t};
+	while (!todo.empty() && blockOpen()) {
+		ast n = todo.back();
+		todo.pop_back();
+		if (n == nullptr) continue;
+		if (n->k == SEQ) {
+			todo.push_back(n->right);
+			todo.push_back(n->left);
+		}
+		else if (n->k == BLOCK) todo.push_back(n->left);
+		else ast_compile(n);
+	}
+	return nullptr;
+}
+
 // Nested statements recurse through ast_compile and ast_sem, so these two
 // keep small stack frames: each case with locals of its own is a function
 // that is not inlined.
@@ -778,15 +802,7 @@ Value * ast_compile (ast t) {
 	case WHILE: return compileWhile(t);
 	case IF: return compileIf(t);
 	case IFELSE: return compileIfElse(t);
-	case SEQ: {
-		// A statement list nests on the right. Walk it in a loop, so long
-		// lists do not use up the stack. Statements after a return are
-		// dead: emitting them would put code after the ret terminator.
-		for (; t != nullptr && t->k == SEQ && blockOpen(); t = t->right)
-			ast_compile(t->left);
-		if (t != nullptr && blockOpen()) ast_compile(t);
-		return nullptr;
-	}
+	case SEQ: case BLOCK: return compileStatements(t);
 	case RET: return compileReturn(t);
 	case PAR: return compileParameter(t);
 	case PARREF: return compileReferenceParameter(t);
@@ -1269,6 +1285,24 @@ static LLVM_ATTRIBUTE_NOINLINE Type_T checkArithmetic (ast t, SymbolEntry *f) {
 	return t->type;
 }
 
+// Checks a statement list or a block with a work list, as compileStatements
+// compiles them.
+static LLVM_ATTRIBUTE_NOINLINE Type_T checkStatements (ast t, SymbolEntry *f) {
+	std::vector<ast> todo{t};
+	while (!todo.empty()) {
+		ast n = todo.back();
+		todo.pop_back();
+		if (n == NULL) continue;
+		if (n->k == SEQ) {
+			todo.push_back(n->right);
+			todo.push_back(n->left);
+		}
+		else if (n->k == BLOCK) todo.push_back(n->left);
+		else ast_sem(n, f);
+	}
+	return NULL;
+}
+
 Type_T ast_sem (ast t, SymbolEntry * f) {
 	if (t == NULL) return NULL;
 	// Symbol table errors have no line of their own, so they use this one.
@@ -1300,13 +1334,7 @@ Type_T ast_sem (ast t, SymbolEntry * f) {
 		ast_sem(t->right,f);
 		return NULL;
 	}
-	case SEQ: {
-		// A statement list nests on the right, so walk it in a loop.
-		for (; t != NULL && t->k == SEQ; t = t->right)
-			ast_sem(t->left, f);
-		ast_sem(t, f);
-		return NULL;
-	}
+	case SEQ: case BLOCK: return checkStatements(t, f);
 	case RET: return checkReturn(t, f);
 	case PAR: {
 		if (t->left->k == TYPEARR) {
@@ -1702,7 +1730,7 @@ static int firstLine (ast t) {
 
 void check_nesting (ast tree) {
 	// Walk the tree with a stack of its own, since it may be deeper than
-	// the limit. Each node carries how deep it is in if and while
+	// the limit. Each node carries how deep it is in if, while and block
 	// statements, in operators and calls, and in functions.
 	struct Item { ast t; int stmt, expr, func; };
 	std::vector<Item> todo{{tree, 0, 0, 0}};
@@ -1720,7 +1748,7 @@ void check_nesting (ast tree) {
 			if (c == NULL) continue;
 			Item next = {c, it.stmt, it.expr, it.func};
 			// The IF inside an IFELSE is the same statement.
-			if ((c->k == WHILE || c->k == IF || c->k == IFELSE) && !(t->k == IFELSE && side == 0))
+			if ((c->k == WHILE || c->k == IF || c->k == IFELSE || c->k == BLOCK) && !(t->k == IFELSE && side == 0))
 				next.stmt++;
 			if (c->k == FUNCDEF) next.func++;
 			// The left operands of a chain such as a + b - c are compiled

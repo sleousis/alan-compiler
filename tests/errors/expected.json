@@ -29,5 +29,6 @@
   {"file": "tests/errors/char_empty.alan", "line": 4, "contains": "Invalid character constant"},
   {"file": "tests/errors/char_two.alan", "line": 4, "contains": "Invalid character constant"},
   {"file": "tests/errors/string_backslash_at_end.alan", "line": 4, "contains": "String literal not closed on this line"},
-  {"file": "Examples/papariatest.alan", "line": 15, "contains": "Function paparia returns int, so it cannot be called as a statement."}
+  {"file": "Examples/papariatest.alan", "line": 15, "contains": "Function paparia returns int, so it cannot be called as a statement."},
+  {"file": "tests/errors/nesting_3001_blocks.alan", "line": 3006, "contains": "Nesting is too deep"}
 ]
