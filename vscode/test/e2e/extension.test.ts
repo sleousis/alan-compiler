@@ -60,7 +60,7 @@ describe("Alan extension", function () {
 
   before(async function () {
     this.timeout(120_000);
-    const ext = vscode.extensions.getExtension("SavvasLeousis.alan");
+    const ext = vscode.extensions.getExtension("sleousis.alan");
     assert.ok(ext, "the extension is installed in the test instance");
     doc = await vscode.workspace.openTextDocument(bubbleSort);
     await vscode.window.showTextDocument(doc);

@@ -3,7 +3,7 @@
   "displayName": "Alan",
   "description": "Alan language support: highlighting, live errors, completion, one-click run and debugging.",
   "version": "1.0.0",
-  "publisher": "SavvasLeousis",
+  "publisher": "sleousis",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -148,7 +148,7 @@
     },
     "configurationDefaults": {
       "[alan]": {
-        "editor.defaultFormatter": "SavvasLeousis.alan"
+        "editor.defaultFormatter": "sleousis.alan"
       }
     },
     "taskDefinitions": [
