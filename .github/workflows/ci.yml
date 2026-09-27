@@ -188,6 +188,7 @@ jobs:
         run: |
           python3 tests/run_examples.py --alanc dist/${{ matrix.platform }}/bin/alanc
           python3 tests/run_errors.py --alanc dist/${{ matrix.platform }}/bin/alanc
+          python3 tests/run_cli.py --alanc dist/${{ matrix.platform }}/bin/alanc
 
       - name: Warm up zig (Windows)
         if: runner.os == 'Windows'
@@ -205,6 +206,8 @@ jobs:
           python tests/run_examples.py --alanc dist/${{ matrix.platform }}/bin/alanc.exe
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/run_errors.py --alanc dist/${{ matrix.platform }}/bin/alanc.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/run_cli.py --alanc dist/${{ matrix.platform }}/bin/alanc.exe
           if ($LASTEXITCODE -ne 0) { exit 1 }
           # alanc run must not leave linker side files behind
           $pdb = @(Get-ChildItem -Path $env:TEMP -Filter 'alan*.pdb')

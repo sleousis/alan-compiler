@@ -20,6 +20,21 @@ bash tests/record_legacy.sh
 The legacy runtime reads input with raw `read()` calls.
 The recording script feeds input one line at a time with a short pause for that reason.
 
+## Regression cases
+
+The cases in `regress/` check bugs that were fixed.
+Their expected output is written by hand, and the recording script skips them.
+The `rt-` cases cover the runtime library.
+`rt-wait.alan` is not a case. `run_cli.py` uses it.
+
+## Command line
+
+`run_cli.py` checks the usage message, sources that cannot be opened, and that Ctrl-C during `alanc run` leaves no temporary files:
+
+```
+python tests/run_cli.py --alanc <path-to-alanc>
+```
+
 ## Untested examples
 
 - `prog11` is not a case. It answered "no" to every magic square tried, so its expected behaviour is unknown.
