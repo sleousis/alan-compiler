@@ -130,7 +130,7 @@ describe("Alan extension", function () {
     return diags.map((d) => [d.range.start.line, d.message]);
   }
 
-  for (const kind of ["ifs", "expression"]) {
+  for (const kind of ["ifs", "expression", "blocks"]) {
     it(`follows 3000 nested ${kind} and reports 3001, as the compiler does`, async function () {
       this.timeout(60_000);
       // An unknown name after the nesting shows that the server got through it.

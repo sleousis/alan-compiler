@@ -2,7 +2,7 @@
 // before the other checks and counts three kinds of nesting, each up to
 // 3000 levels:
 // - statements: while, if and if-else (the if of an if-else is one level),
-//   and blocks inside a function's body,
+//   and blocks used as statements (not a function's body),
 // - expressions: operators, !, comparisons, & and |, calls and array
 //   elements, where the left operand of a chain such as a + b - c or
 //   p & q | r is not a level deeper,
