@@ -9,6 +9,7 @@
 #include "ast.hpp"
 #include "symbol.hpp"
 #include "error.hpp"
+#include "debuginfo.hpp"
 
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/PassManager.h>
@@ -183,6 +184,8 @@ static std::unique_ptr<FunctionAnalysisManager> TheFAM;
 static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static std::map<int, std::map<std::string, Value *> > NamedValues;
+// Debug information for -g, null without it.
+static DebugInfo *DI = nullptr;
 
 // Global LLVM variables related to the generated code.
 static Function *TheWriteInteger;
@@ -336,8 +339,25 @@ bool isVariable = true;
 bool retEnabled = false;
 BasicBlock *globalBB;
 
+// The source line a statement starts on, or 0 for other nodes. The parser
+// gives if and while the line where their body ends, so use the condition's.
+static int statementLine (ast t) {
+	switch (t->k) {
+	case WHILE: case IF: return t->left->line;
+	case IFELSE: return t->left->left->line;
+	case RET: case ASS: case FUNCALL: return t->line;
+	default: return 0;
+	}
+}
+
+// The line a function is declared on: the line of its result type.
+static int functionLine (ast t) {
+	return t->right->k == SEQ ? t->right->left->line : t->right->line;
+}
+
 Value * ast_compile (ast t) {
 	if (t == nullptr) return nullptr;
+	if (DI && statementLine(t) > 0) di_location(DI, Builder, statementLine(t));
 	switch (t->k) {
 	case WHILE: {
 		// Emit the number of iterations.
@@ -367,6 +387,7 @@ Value * ast_compile (ast t) {
 		// Emit the body of the loop.
 		ast_compile(t->right);
 		// Decrease the number of iterations.
+		if (DI) di_location(DI, Builder, statementLine(t));
 		Value *newCond = ast_compile(t->left);
 		// Loop back.
 		phi_iter->addIncoming(newCond, Builder.GetInsertBlock());
@@ -504,6 +525,11 @@ Value * ast_compile (ast t) {
 				currentFunction->funVariables.push_back(tmp);
 			}
 		}
+		if (DI) {
+			di_variable(DI, cast<AllocaInst>(currentFunction->NamedValues[t->id]), t->id, t->line,
+			            t->left->type->kind == Type_tag::TYPE_CHAR, t->left->k == TYPEARR,
+			            t->left->k == TYPEARR ? t->left->num : 0);
+		}
 		return nullptr;
 	}
 	case ASS: {
@@ -639,6 +665,13 @@ Value * ast_compile (ast t) {
 			BasicBlock *BB = BasicBlock::Create(TheContext, "entry", currentFunction->func);
 			Builder.SetInsertPoint(BB);
 			globalBB = BB;
+			if (DI) {
+				std::vector<std::pair<std::string, Type *>> params;
+				for (parameterStruct *p : currentFunction->funParameters)
+					params.emplace_back(p->parName, p->parType);
+				di_function(DI, currentFunction->func, t->id, functionLine(t), params);
+				di_location(DI, Builder, functionLine(t));
+			}
 			//set args names and initialization
 			Function::arg_iterator argss = currentFunction->func->arg_begin();
 			for (size_t i = 0; i < currentFunction->funHiddenParameters.size(); i++) {
@@ -670,6 +703,11 @@ Value * ast_compile (ast t) {
 					vartmp->isArray = false;
 					currentFunction->funVariables.push_back(vartmp);
 					Builder.CreateStore(tmpArg, currentFunction->NamedValues[currentFunction->funParameters[i]->parName]);
+					if (DI) {
+						di_variable(DI, cast<AllocaInst>(currentFunction->NamedValues[currentFunction->funParameters[i]->parName]),
+						            currentFunction->funParameters[i]->parName, functionLine(t),
+						            currentFunction->funParameters[i]->parType == i8, false, 0);
+					}
 				}
 				else {
 					if (currentFunction->funParameters[i]->isArray) {
@@ -686,6 +724,16 @@ Value * ast_compile (ast t) {
 					vartmp->varType = currentFunction->funParameters[i]->parTypePure;
 					vartmp->isArray = currentFunction->funParameters[i]->isArray;
 					currentFunction->funVariables.push_back(vartmp);
+					if (DI) {
+						// A reference has no slot of its own, so give the
+						// debugger one that holds the address.
+						AllocaInst *slot = Builder.CreateAlloca(tmpArg->getType(), nullptr,
+						                                        std::string(currentFunction->funParameters[i]->parName) + ".addr");
+						Builder.CreateStore(tmpArg, slot);
+						di_variable(DI, slot, currentFunction->funParameters[i]->parName, functionLine(t),
+						            currentFunction->funParameters[i]->parTypePure == i8,
+						            currentFunction->funParameters[i]->isArray, 0, true);
+					}
 				}
 			}
 			//Emit the program code.
@@ -706,6 +754,8 @@ Value * ast_compile (ast t) {
 				currentFunction->funcDefsDismissed.pop_back();
 				ast_compile(poppedTmp);
 			}
+			// Nested functions are generated above, inside this one's scope.
+			di_end_function(DI);
 			currentFunction = currentFunction->father;
 		}
 		else {
@@ -992,9 +1042,10 @@ Module *alan_module () {
 	return TheModule.get();
 }
 
-bool llvm_compile (ast t) {
+bool llvm_compile (ast t, const char *debugFile) {
 	// Initialize the module and the optimization passes.
 	TheModule = std::make_unique<Module>("alan program", TheContext);
+	DI = di_begin(*TheModule, debugFile);
 	TheFPM = std::make_unique<FunctionPassManager>();
 	TheLAM = std::make_unique<LoopAnalysisManager>();
 	TheFAM = std::make_unique<FunctionAnalysisManager>();
@@ -1184,6 +1235,8 @@ bool llvm_compile (ast t) {
 	currentFunction->funName = "__Main__";
 	currentFunction->father = NULL;
 	ast_compile(t);
+	di_finish(DI);
+	DI = nullptr;
 	// Verify and optimize the main function.
 	bool bad = verifyModule(*TheModule, &errs());
 	if (bad) {

@@ -48,9 +48,13 @@ jobs:
           - platform: macos-x64
             os: macos-26-intel
             zig: x86_64-macos
+            llvm-arch: x86_64
+            llvm-cache: 2
           - platform: macos-arm64
             os: macos-latest
             zig: aarch64-macos
+            llvm-arch: arm64
+            llvm-cache: 1
     runs-on: ${{ matrix.os }}
     container:
       image: ${{ matrix.container || '' }}
@@ -96,12 +100,14 @@ jobs:
 
       # zig builds libc for a target on its first link, which takes minutes
       # (most on Windows ARM64, where zig runs under emulation), so keep its
-      # global cache between runs.
+      # global cache between runs. On Windows a debug link builds another
+      # libc, so the key changed when the -g test came in.
       - name: Cache zig's libc builds
         uses: actions/cache@v6
         with:
           path: .zig-global-cache
-          key: zig-${{ matrix.platform }}-${{ steps.versions.outputs.zig }}
+          key: zig-${{ matrix.platform }}-${{ steps.versions.outputs.zig }}-g
+          restore-keys: zig-${{ matrix.platform }}-${{ steps.versions.outputs.zig }}
 
       - uses: actions/setup-python@v7
         if: runner.os != 'Linux'
@@ -133,15 +139,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sh tools/build-linux.sh
 
-      # Building LLVM takes about an hour. Bump the -2 in the key when
+      # Building LLVM takes about an hour. Bump llvm-cache in the matrix when
       # build_llvm_from_source in tools/build-macos.sh changes.
       - name: Restore LLVM built from source
         id: llvm-cache
-        if: matrix.platform == 'macos-x64'
+        if: runner.os == 'macOS'
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/llvm-*-x86_64-macos
-          key: llvm-src-macos-x64-${{ steps.versions.outputs.llvm }}-2
+          path: ${{ runner.temp }}/llvm-*-${{ matrix.llvm-arch }}-macos
+          key: llvm-src-${{ matrix.platform }}-${{ steps.versions.outputs.llvm }}-${{ matrix.llvm-cache }}
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
@@ -149,9 +155,9 @@ jobs:
 
       - name: Check for LLVM built from source
         id: llvm-built
-        if: always() && matrix.platform == 'macos-x64' && steps.llvm-cache.outputs.cache-hit != 'true'
+        if: always() && runner.os == 'macOS' && steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
-          if ls "$RUNNER_TEMP"/llvm-*-x86_64-macos/complete >/dev/null 2>&1; then
+          if ls "$RUNNER_TEMP"/llvm-*-${{ matrix.llvm-arch }}-macos/complete >/dev/null 2>&1; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -159,8 +165,8 @@ jobs:
         if: always() && steps.llvm-built.outputs.found == 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/llvm-*-x86_64-macos
-          key: llvm-src-macos-x64-${{ steps.versions.outputs.llvm }}-2
+          path: ${{ runner.temp }}/llvm-*-${{ matrix.llvm-arch }}-macos
+          key: llvm-src-${{ matrix.platform }}-${{ steps.versions.outputs.llvm }}-${{ matrix.llvm-cache }}
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
@@ -204,6 +210,116 @@ jobs:
           $pdb = @(Get-ChildItem -Path $env:TEMP -Filter 'alan*.pdb')
           if ($pdb.Count -ne 0) { $pdb.FullName; exit 1 }
 
+      # Windows gives main() its arguments in the ANSI code page. A source in
+      # a folder with Greek letters and a space must still compile, build and
+      # run, also when TEMP and TMP hold Greek letters. An error names the
+      # file by its base name.
+      - name: Test non-ASCII paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $alanc = (Resolve-Path "dist/${{ matrix.platform }}/bin/alanc.exe").Path
+          $env:ALAN_RUNTIME = (Resolve-Path "dist/${{ matrix.platform }}/lib/libalanrt.a").Path
+          $dir = Join-Path $env:RUNNER_TEMP 'Σάββας dir'
+          $tmp = Join-Path $env:RUNNER_TEMP 'Προσωρινά αρχεία'
+          New-Item -ItemType Directory -Force $dir, $tmp | Out-Null
+          $src = Join-Path $dir 'Γειά σου.alan'
+          Copy-Item Examples/HelloWorld.alan $src
+          $want = [IO.File]::ReadAllText("$PWD\tests\expected\HelloWorld.txt")
+          function Assert-Hello($what, $out) {
+            if ($LASTEXITCODE -ne 0) { throw "$what failed with exit code $LASTEXITCODE" }
+            $got = ($out | Out-String) -replace "`r", ''
+            if ($got -ne $want) { throw "$what printed: $got" }
+          }
+          foreach ($greekTemp in $false, $true) {
+            if ($greekTemp) { $env:TEMP = $tmp; $env:TMP = $tmp }
+            Write-Host "TEMP=$env:TEMP"
+            & $alanc check $src
+            if ($LASTEXITCODE -ne 0) { throw "check failed with exit code $LASTEXITCODE" }
+            Assert-Hello 'run' (& $alanc run $src)
+            $exe = Join-Path $dir 'Γειά σου.exe'
+            Remove-Item $exe -ErrorAction SilentlyContinue
+            & $alanc build $src
+            if ($LASTEXITCODE -ne 0) { throw "build failed with exit code $LASTEXITCODE" }
+            Assert-Hello 'build' (& $exe)
+            $dbg = Join-Path $dir 'Γειά debug.exe'
+            & $alanc build -g $src -o $dbg
+            if ($LASTEXITCODE -ne 0) { throw "build -g failed with exit code $LASTEXITCODE" }
+            Assert-Hello 'build -g' (& $dbg)
+            if (Test-Path (Join-Path $dir 'Γειά debug.pdb')) { throw 'build -g left a .pdb behind' }
+          }
+          $bad = Join-Path $dir 'Σφάλμα.alan'
+          Copy-Item tests/errors/undeclared.alan $bad
+          # Python reads stderr as bytes, whatever the console code page is.
+          $check = @'
+          import os, re, subprocess, sys
+          r = subprocess.run([sys.argv[1], 'check', sys.argv[2]], capture_output=True)
+          err = r.stderr.decode('utf-8')
+          name = re.escape(os.path.basename(sys.argv[2]))
+          if r.returncode != 1 or not re.match(name + r':3: error: ', err):
+              sys.exit('exit %d, stderr: %r' % (r.returncode, err))
+          '@
+          & $env:PYTHON -c $check $alanc $bad
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # The LLVM package for Windows has no LLDB, so take it from the
+      # installer and keep only the files LLDB needs.
+      - name: Cache LLDB (Windows)
+        id: lldb-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/lldb
+          key: lldb-${{ matrix.platform }}-${{ steps.versions.outputs.llvm }}
+
+      - name: Get LLDB (Windows)
+        if: runner.os == 'Windows' && steps.lldb-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $msiArch = if ('${{ matrix.platform }}' -eq 'windows-arm64') { 'woa64' } else { 'win64' }
+          $msi = Join-Path $env:RUNNER_TEMP 'llvm.msi'
+          $unpacked = Join-Path $env:RUNNER_TEMP 'llvm-msi'
+          Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.versions.outputs.llvm }}/LLVM-${{ steps.versions.outputs.llvm }}-$msiArch.msi" -OutFile $msi
+          # An administrative install only unpacks the files.
+          $p = Start-Process msiexec -ArgumentList '/a', $msi, '/qn', "TARGETDIR=$unpacked" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "msiexec failed with exit code $($p.ExitCode)" }
+          $bin = Join-Path $env:RUNNER_TEMP 'lldb\bin'
+          New-Item -ItemType Directory -Force $bin | Out-Null
+          foreach ($f in 'lldb.exe', 'liblldb.dll', 'lldb-server.exe', 'lldb-argdumper.exe') {
+            Copy-Item (Join-Path $unpacked "LLVM\bin\$f") $bin
+          }
+          Remove-Item -Recurse -Force $msi, $unpacked
+
+      # A program built with -g must show LLDB its source lines, frames and
+      # variables. Linux gets lldb from apt.llvm.org, macOS has Xcode's and
+      # Windows the one from the step above, which loads python3.dll from
+      # the Python that setup-python put on the PATH.
+      - name: Test debug information
+        env:
+          ALAN_RUNTIME: dist/${{ matrix.platform }}/lib/libalanrt.a
+        run: |
+          llvm="${{ steps.versions.outputs.llvm }}"
+          case "${{ matrix.platform }}" in
+            linux-*)
+              curl -fsSL --retry 5 https://apt.llvm.org/llvm-snapshot.gpg.key \
+                | gpg --dearmor > /etc/apt/trusted.gpg.d/apt.llvm.org.gpg
+              echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-${llvm%%.*} main" \
+                > /etc/apt/sources.list.d/llvm.list
+              apt-get update
+              apt-get install -y "lldb-${llvm%%.*}"
+              lldb="lldb-${llvm%%.*}"
+              alanc="dist/${{ matrix.platform }}/bin/alanc" ;;
+            macos-*)
+              lldb=lldb
+              alanc="dist/${{ matrix.platform }}/bin/alanc" ;;
+            windows-*)
+              lldb="$RUNNER_TEMP/lldb/bin/lldb.exe"
+              alanc="dist/${{ matrix.platform }}/bin/alanc.exe" ;;
+          esac
+          "$lldb" --version
+          $PYTHON tests/debug/lldb_check.py --alanc "$alanc" --lldb "$lldb"
+
       # The bundle carries the zig that the tests used. On Windows ARM64
       # that is the x86_64 build, which runs under emulation.
       - name: Package
@@ -233,6 +349,131 @@ jobs:
           tr -d '\r' < "$smoke/alan/VERSION" | grep -qx "$VERSION"
           "$alanc" run Examples/HelloWorld.alan > "$smoke/out.txt"
           tr -d '\r' < "$smoke/out.txt" | cmp - tests/expected/HelloWorld.txt
+
+      # Lays the bundle out like a release for the installer tests below:
+      # v0.0.0-ci holds it with its checksum, v0.0.0-bad a damaged copy with
+      # the checksum of the good one, v0.0.0-none no bundle at all.
+      - name: Prepare a release folder for the installers
+        run: |
+          case "${{ matrix.platform }}" in windows-*) ext=zip ;; *) ext=tar.gz ;; esac
+          srv="$RUNNER_TEMP/srv/download"
+          rm -rf "$RUNNER_TEMP/srv"
+          mkdir -p "$srv/v0.0.0-ci" "$srv/v0.0.0-bad" "$srv/v0.0.0-none"
+          good="alan-v0.0.0-ci-${{ matrix.platform }}.$ext"
+          bad="alan-v0.0.0-bad-${{ matrix.platform }}.$ext"
+          cp "out/alan-$VERSION-${{ matrix.platform }}.$ext" "$srv/v0.0.0-ci/$good"
+          head -c 1000000 "$srv/v0.0.0-ci/$good" > "$srv/v0.0.0-bad/$bad"
+          sum=$($PYTHON -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$srv/v0.0.0-ci/$good" | tr -d '\r')
+          printf '%s  %s\n' "$sum" "$good" > "$srv/v0.0.0-ci/SHA256SUMS"
+          printf '%s  %s\n' "$sum" "$bad" > "$srv/v0.0.0-bad/SHA256SUMS"
+          : > "$srv/v0.0.0-none/SHA256SUMS"
+
+      # Installs the bundle from a local server the way a user would, then
+      # runs alanc from a shell with a clean environment.
+      - name: Test the installer (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          unset ALAN_ZIG ALAN_RUNTIME
+          $PYTHON -m http.server 8000 --bind 127.0.0.1 --directory "$RUNNER_TEMP/srv" > "$RUNNER_TEMP/http.log" 2>&1 &
+          trap "kill $!" EXIT
+          for i in $(seq 50); do curl -fs -o /dev/null http://127.0.0.1:8000/ && break; sleep 0.2; done
+          export ALAN_BASE_URL=http://127.0.0.1:8000
+          dest="$HOME/.local/share/alan"
+          # version, expected message, and whether an install must still be there
+          expect_failure() {
+            code=0
+            ALAN_VERSION=$1 sh install/install.sh 2> "$RUNNER_TEMP/err.txt" || code=$?
+            cat "$RUNNER_TEMP/err.txt"
+            test "$code" -eq 1
+            grep -q "$2" "$RUNNER_TEMP/err.txt"
+            if [ "$3" = kept ]; then test -x "$dest/bin/alanc"; else test ! -e "$dest"; fi
+            test ! -e "$dest.new"
+            test ! -e "$dest.old"
+          }
+          run_installed() {
+            env -i HOME="$HOME" PATH="$HOME/.local/bin:/usr/bin:/bin" ZIG_GLOBAL_CACHE_DIR="$ZIG_GLOBAL_CACHE_DIR" \
+              sh -c 'test "$(command -v alanc)" = "$HOME/.local/bin/alanc" && alanc run Examples/HelloWorld.alan' \
+              > "$RUNNER_TEMP/installed.txt"
+            cmp "$RUNNER_TEMP/installed.txt" tests/expected/HelloWorld.txt
+          }
+          expect_failure v0.0.0-none "Alan v0.0.0-none has no download for ${{ matrix.platform }}" gone
+          expect_failure v0.0.0-bad "Checksum mismatch" gone
+          ALAN_VERSION=v0.0.0-ci sh install/install.sh
+          # a second run replaces the first install
+          ALAN_VERSION=v0.0.0-ci sh install/install.sh
+          # a failed upgrade keeps the working install
+          expect_failure v0.0.0-bad "Checksum mismatch" kept
+          run_installed
+
+      # Installs with PowerShell 7, then again with Windows PowerShell 5.1,
+      # which must pick the same platform and keep one PATH entry. The user
+      # PATH starts with an unexpanded %USERPROFILE% entry that must survive.
+      # An upgrade with a locked file must fail and keep the old install. A
+      # new shell reads PATH from the registry and runs alanc.
+      - name: Test the installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Remove-Item Env:ALAN_ZIG, Env:ALAN_RUNTIME -ErrorAction SilentlyContinue
+          $server = Start-Process $env:PYTHON -PassThru -NoNewWindow `
+            -ArgumentList '-m', 'http.server', '8000', '--bind', '127.0.0.1', '--directory', "$env:RUNNER_TEMP\srv" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\http.out" -RedirectStandardError "$env:RUNNER_TEMP\http.log"
+          $dest = "$env:LOCALAPPDATA\alan"
+          function Invoke-Installer($shell, $version) {
+            $env:ALAN_VERSION = $version
+            $out = & $shell -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 | Out-String
+            $code = $LASTEXITCODE
+            Write-Host $out
+            @{ Code = $code; Out = $out }
+          }
+          function Assert-Failure($version, $message, [bool]$kept) {
+            $r = Invoke-Installer pwsh $version
+            if ($r.Code -ne 1) { throw "exit code $($r.Code) for $version" }
+            if (-not $r.Out.Contains($message)) { throw "no message '$message'" }
+            if ((Test-Path "$dest\bin\alanc.exe") -ne $kept) { throw "after $version the install is there: $(-not $kept)" }
+            if (-not $kept -and (Test-Path $dest)) { throw "a failed install left $dest behind" }
+            if ((Test-Path "$dest.new") -or (Test-Path "$dest.old")) { throw "a failed install left $dest.new or $dest.old behind" }
+          }
+          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+          $seed = '%USERPROFILE%\alan-ci-unexpanded'
+          $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          $key.SetValue('Path', ((@($raw -split ';' | Where-Object { $_ }) + $seed) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+          try {
+            for ($i = 0; $i -lt 50; $i++) {
+              try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ | Out-Null; break } catch { Start-Sleep -Milliseconds 200 }
+            }
+            $env:ALAN_BASE_URL = 'http://127.0.0.1:8000'
+            Assert-Failure 'v0.0.0-none' 'Alan v0.0.0-none has no download for ${{ matrix.platform }}.' $false
+            Assert-Failure 'v0.0.0-bad' 'Checksum mismatch' $false
+            foreach ($shell in 'pwsh', 'powershell') {
+              $r = Invoke-Installer $shell 'v0.0.0-ci'
+              if ($r.Code -ne 0) { throw "$shell failed with exit code $($r.Code)" }
+              if (-not $r.Out.Contains('(${{ matrix.platform }})')) { throw "$shell picked the wrong platform" }
+            }
+            Assert-Failure 'v0.0.0-bad' 'Checksum mismatch' $true
+            $lock = [IO.File]::Open("$dest\README.txt", 'Open', 'Read', 'None')
+            try { Assert-Failure 'v0.0.0-ci' "Could not replace $dest" $true } finally { $lock.Close() }
+          } finally {
+            Stop-Process $server
+          }
+          if ($key.GetValueKind('Path') -ne 'ExpandString') { throw "the user PATH is now $($key.GetValueKind('Path'))" }
+          $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          if (-not ($raw -split ';' -contains $seed)) { throw "the user PATH lost $seed" }
+          $bin = "$dest\bin"
+          $user = @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_.TrimEnd('\') -ieq $bin })
+          if ($user.Count -ne 1) { throw "the user PATH holds $bin $($user.Count) times" }
+          $machine = @([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';' | Where-Object { $_.TrimEnd('\') -ieq $bin })
+          if ($machine.Count -ne 0) { throw "the machine PATH holds $bin" }
+          pwsh -NoProfile -Command {
+            $env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + [Environment]::GetEnvironmentVariable('Path', 'Machine')
+            $found = (Get-Command alanc).Source
+            if ($found -ne "$env:LOCALAPPDATA\alan\bin\alanc.exe") { Write-Host "found $found"; exit 1 }
+            alanc run Examples/HelloWorld.alan > "$env:RUNNER_TEMP\installed.txt"
+            exit $LASTEXITCODE
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $got = [IO.File]::ReadAllText("$env:RUNNER_TEMP\installed.txt") -replace "`r", ''
+          if ($got -ne [IO.File]::ReadAllText("$PWD\tests\expected\HelloWorld.txt")) { "got: $got"; exit 1 }
 
       - uses: actions/upload-artifact@v7
         with:

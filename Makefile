@@ -16,7 +16,9 @@ parser.hpp parser.cpp: parser.y
 
 parser.o: parser.cpp
 
-ast.o: ast.cpp ast.hpp
+ast.o: ast.cpp ast.hpp debuginfo.hpp
+
+debuginfo.o: debuginfo.cpp debuginfo.hpp
 
 %.o: %.cpp
 		$(CXX) $(CXXFLAGS) -c $<
@@ -25,7 +27,7 @@ emit.o: emit.cpp emit.hpp
 
 cli.o: cli.cpp cli.hpp emit.hpp error.hpp
 
-alanc: lexer.o parser.o ast.o error.o general.o symbol.o cli.o emit.o
+alanc: lexer.o parser.o ast.o error.o general.o symbol.o cli.o emit.o debuginfo.o
 	$(CXX) $(CXXFLAGS) -o alanc $^ $(LDFLAGS)
 
 clean:
