@@ -127,7 +127,28 @@ describe("parser", () => {
     assert.equal(tooDeep(`m () : proc\n{ ${"if (true) ".repeat(n)}; }`), 1);
     assert.equal(tooDeep(`m () : proc\n{ if (${"!".repeat(n)}true) ; }`), 1);
     assert.equal(tooDeep(`m () : proc\n x : int;\n{ x = ${"- ".repeat(n)}1; }`), 1);
-    assert.equal(tooDeep(`${"f () : proc\n".repeat(n)}${"{ }\n".repeat(n)}`), 1);
+  });
+  it("stops at deeply nested function definitions", () => {
+    const r = parse(`${"f () : proc\n".repeat(n)}${"{ }\n".repeat(n)}`);
+    assert.deepEqual(r.diagnostics.map(d => [d.range.start, d.message]), [
+      [{ line: 501, character: 0 }, "Nesting is too deep"],
+      [{ line: 10501, character: 0 }, "expected end of file but found '{'"],
+    ]);
+  });
+  it("stops at deeply nested call arguments and keeps the next statement", () => {
+    const r = body(`${"f(".repeat(n)}1${")".repeat(n)}; g();`);
+    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
+    assert.deepEqual(r.program!.body.stmts.map(s => s.kind), ["call"]);
+  });
+  it("stops at deeply nested array indexes and keeps the next statement", () => {
+    const r = body(`x = ${"a[".repeat(n)}0${"]".repeat(n)}; g();`);
+    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
+    assert.deepEqual(r.program!.body.stmts.map(s => s.kind), ["call"]);
+  });
+  it("keeps the token after a skipped group in a statement body", () => {
+    const r = body(`if (true) ${"{".repeat(n)}${"}".repeat(n)} x = 1;`);
+    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
+    assert.deepEqual(r.program!.body.stmts.map(s => s.kind), ["if", "assign"]);
   });
   it("does not swallow the closing brace after a missing if body", () => {
     const r = parse("m () : proc\n{\n  if (x > 0)\n}\n");

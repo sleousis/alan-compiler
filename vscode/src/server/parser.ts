@@ -15,6 +15,8 @@ type RelOp = Extract<Cond, { kind: "compare" }>["op"];
 const MAX_DEPTH = 500;
 const TOO_DEEP = "Nesting is too deep";
 
+const CLOSERS: Partial<Record<TokenKind, TokenKind>> = { "(": ")", "[": "]", "{": "}" };
+
 const REL_OPS = new Set<TokenKind>(["==", "!=", "<", ">", "<=", ">="]);
 const ARITH_OPS = new Set<TokenKind>(["+", "-", "*", "/", "%"]);
 /** Tokens that begin a statement no matter where they stand. */
@@ -108,7 +110,8 @@ class Parser {
       const t = this.peek();
       if (this.diagnostics.some((d) => d.message === TOO_DEEP)) this.errorCount++;
       else this.report(TOO_DEEP, t.range, t);
-      if (t.kind === "(" || t.kind === "{") this.skipGroup(t.kind, t.kind === "(" ? ")" : "}");
+      const close = CLOSERS[t.kind];
+      if (close) this.skipGroup(t.kind, close);
       throw new ParseError();
     }
     this.depth++;
@@ -327,7 +330,7 @@ class Parser {
       s = this.nested(() => this.stmt());
     } catch (e) {
       if (!(e instanceof ParseError)) throw e;
-      this.syncStmt(this.pos);
+      this.syncStmt(from);
     }
     if (s) return s;
     const at = first.range.start;
@@ -396,9 +399,13 @@ class Parser {
   private lvalue(): LValue {
     const t = this.next();
     if (t.kind === "string") return { kind: "string", value: t.text, range: t.range };
-    if (this.eat("[")) {
-      const index = this.expr();
-      this.expect("]");
+    if (this.at("[")) {
+      const index = this.nested(() => {
+        this.next();
+        const inner = this.expr();
+        this.expect("]");
+        return inner;
+      });
       return { kind: "index", name: t.text, nameRange: t.range, index, range: this.span(t) };
     }
     return { kind: "name", name: t.text, range: t.range };
@@ -407,13 +414,16 @@ class Parser {
   /** id "(" [expr {"," expr}] ")" */
   private call(): Call {
     const nameTok = this.next();
-    this.next();
-    const args: Expr[] = [];
-    if (!this.at(")")) {
-      args.push(this.expr());
-      while (this.eat(",")) args.push(this.expr());
-    }
-    this.expect(")", "',' or ')'");
+    const args = this.nested(() => {
+      this.next();
+      const list: Expr[] = [];
+      if (!this.at(")")) {
+        list.push(this.expr());
+        while (this.eat(",")) list.push(this.expr());
+      }
+      this.expect(")", "',' or ')'");
+      return list;
+    });
     return { kind: "call", name: nameTok.text, nameRange: nameTok.range, args, range: this.span(nameTok) };
   }
 
