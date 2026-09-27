@@ -41,12 +41,26 @@
         {
           "name": "constant.character.escape.alan",
           "match": "\\\\(n|t|r|0|\\\\|'|\"|x[0-9a-fA-F]{2})"
+        },
+        {
+          "comment": "Any other backslash is an error in the compiler's lexer.",
+          "name": "invalid.illegal.escape.alan",
+          "match": "\\\\.?"
         }
       ]
     },
     "character": {
-      "name": "constant.character.alan",
-      "match": "'(\\\\(n|t|r|0|\\\\|'|\"|x[0-9a-fA-F]{2})|[^'\\\\])'"
+      "comment": "A printable ASCII character other than the quotes and the backslash, or an escape. Anything else between quotes is an error.",
+      "patterns": [
+        {
+          "name": "constant.character.alan",
+          "match": "'(\\\\(n|t|r|0|\\\\|'|\"|x[0-9a-fA-F]{2})|[ !#-&(-\\[\\]-~])'"
+        },
+        {
+          "name": "invalid.illegal.character.alan",
+          "match": "'(\\\\.|[^'\\\\])+?'"
+        }
+      ]
     },
     "number": {
       "name": "constant.numeric.integer.alan",

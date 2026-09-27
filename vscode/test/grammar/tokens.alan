@@ -39,6 +39,20 @@
 --                ^^ constant.character.escape.alan
 --                      ^^^^ constant.character.escape.alan
 --                              ^ string.quoted.double.alan
+  c = '\xFF'; d = '\xaB'; e = '~';
+--    ^^^^^^ constant.character.alan
+--                ^^^^^^ constant.character.alan
+--                            ^^^ constant.character.alan
+  c = '"'; d = '\q'; e = 'ab';
+--    ^^^ invalid.illegal.character.alan
+--             ^^^^ invalid.illegal.character.alan
+--                       ^^^^ invalid.illegal.character.alan
+--     ^ - string.quoted.double.alan
+  s = "bad \q and \xZ9 but \x7E";
+--         ^^ invalid.illegal.escape.alan
+--                ^^ invalid.illegal.escape.alan
+--                         ^^^^ constant.character.escape.alan
+--                             ^ string.quoted.double.alan
   interior : int;
 --^^^^^^^^ - storage.type.alan
 --^^ - keyword.control.alan
