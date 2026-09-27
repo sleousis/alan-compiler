@@ -1,6 +1,7 @@
 # Installs the Alan compiler to %LOCALAPPDATA%\alan and adds its bin folder to the user PATH.
-# ALAN_VERSION picks a release (default: the latest). ALAN_BASE_URL points at
-# another copy of the releases, which the CI tests use.
+# ALAN_VERSION picks a release (default: the newest compiler release, whose
+# tag is v and a digit). ALAN_BASE_URL and ALAN_API_URL point at another
+# copy of the releases and of their list, which the CI tests use.
 # Runs in Windows PowerShell 5.1 and PowerShell 7, from a file or through "irm ... | iex".
 # The script block keeps its variables out of the caller's session.
 & {
@@ -17,8 +18,19 @@
     else { Remove-Item -LiteralPath $path -Recurse -Force }
   }
 
+  # Puts the old install back after an interrupted swap, so the only working
+  # install is never deleted.
+  function Restore-Old($dest, $old) {
+    if (-not (Test-Path -LiteralPath $dest) -and (Test-Path -LiteralPath $old)) {
+      [IO.Directory]::Move($old, $dest)
+    }
+  }
+
   $base = if ($env:ALAN_BASE_URL) { $env:ALAN_BASE_URL } else { 'https://github.com/sleousis/alan-compiler/releases' }
+  $api = if ($env:ALAN_API_URL) { $env:ALAN_API_URL } else { 'https://api.github.com/repos/sleousis/alan-compiler' }
+  $dest = $null
   $new = $null
+  $old = $null
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ("alan-install-" + [Guid]::NewGuid())
 
   try {
@@ -26,12 +38,24 @@
     $dest = Join-Path $env:LOCALAPPDATA 'alan'
     $new = "$dest.new"
     $old = "$dest.old"
+    New-Item -ItemType Directory -Path $tmp | Out-Null
     $ver = $env:ALAN_VERSION
     if (-not $ver) {
+      # GitHub's "latest" release can be an extension release, so the list
+      # decides: the newest release that is not a draft or a prerelease and
+      # whose tag is v and a digit. GitHub lists the newest first.
       try {
-        $ver = (Invoke-RestMethod -UseBasicParsing 'https://api.github.com/repos/sleousis/alan-compiler/releases/latest').tag_name
+        $list = Join-Path $tmp 'releases.json'
+        Invoke-WebRequest -UseBasicParsing "$api/releases?per_page=100" -OutFile $list
+        $releases = Get-Content -Raw -Encoding UTF8 $list | ConvertFrom-Json
+        foreach ($release in $releases) {
+          if (-not $release.draft -and -not $release.prerelease -and [string]$release.tag_name -cmatch '^v[0-9]') {
+            $ver = $release.tag_name
+            break
+          }
+        }
       } catch { $ver = $null }
-      if (-not $ver) { throw 'Could not find the latest Alan release.' }
+      if (-not $ver) { throw 'Could not find an Alan compiler release. Check your connection, or set ALAN_VERSION to a tag such as v2.0.0.' }
     }
 
     # OSArchitecture tells the truth in PowerShell 7 even under x64 emulation.
@@ -43,7 +67,6 @@
     $platform = if ($arch -eq 'Arm64' -or $machine -eq 'ARM64') { 'windows-arm64' } else { 'windows-x64' }
 
     $name = "alan-$ver-$platform.zip"
-    New-Item -ItemType Directory -Path $tmp | Out-Null
     try {
       Invoke-WebRequest -UseBasicParsing "$base/download/$ver/$name" -OutFile (Join-Path $tmp $name)
     } catch {
@@ -64,6 +87,8 @@
     if (-not $expected) { throw "SHA256SUMS of Alan $ver has no line for $name. Nothing was installed." }
     if ($actual -ine $expected) { throw "Checksum mismatch for $name. Nothing was installed." }
 
+    try { Restore-Old $dest $old }
+    catch { throw "Could not move $old from an interrupted install back to $dest. Close any program that uses it and try again." }
     foreach ($leftover in $new, $old) {
       if (Test-Path -LiteralPath $leftover) {
         try { Remove-Folder $leftover }
@@ -119,6 +144,7 @@
     if ($PSCommandPath) { exit 1 }
     $global:LASTEXITCODE = 1
   } finally {
+    if ($dest) { try { Restore-Old $dest $old } catch { } }
     foreach ($path in $new, $tmp) {
       if ($path -and (Test-Path -LiteralPath $path)) { try { Remove-Folder $path } catch { } }
     }

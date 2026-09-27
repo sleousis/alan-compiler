@@ -44,6 +44,9 @@ jobs:
           fail_on_unmatched_files: true
           # tags such as v2.0.0-rc.1 are prereleases
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # A full compiler release becomes GitHub's latest release, so
+          # "latest" always points at a compiler release.
+          make_latest: ${{ !contains(github.ref_name, '-') }}
           body: |
             Alan ${{ github.ref_name }} comes as a self-contained bundle for Windows, Linux and macOS on x64 and arm64, with alanc, its runtime library and the Zig toolchain it links with.
             On Linux or macOS, install it with `curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/alan-${{ github.ref_name }}-linux-x64.tar.gz | tar -xz` (use the file for your system), then run `alan/bin/alanc run hello.alan`.

@@ -1,31 +1,54 @@
 #!/bin/sh
 # Installs the Alan compiler to ~/.local/share/alan and links alanc into ~/.local/bin.
-# ALAN_VERSION picks a release (default: the latest). ALAN_BASE_URL points at
-# another copy of the releases, which the CI tests use.
+# ALAN_VERSION picks a release (default: the newest compiler release, whose
+# tag is v and a digit). ALAN_BASE_URL and ALAN_API_URL point at another
+# copy of the releases and of their list, which the CI tests use.
 # Everything runs from main at the last line, so a download cut short by
 # "curl | sh" runs nothing at all.
 set -eu
 
 fail() { echo "$1" >&2; exit 1; }
 
-# Removes the download and the new folder. After an interrupted swap it puts
-# the old install back.
+# Puts the old install back after an interrupted swap, so the only working
+# install is never deleted.
+restore_old() {
+  if [ ! -e "$DEST" ] && [ -d "$DEST.old" ]; then mv "$DEST.old" "$DEST" || true; fi
+}
+
+# Restores the old install first. Then removes the download, the new folder
+# and an old install that is no longer needed.
 cleanup() {
-  rm -rf "$TMP" "$DEST.new"
-  if [ -d "$DEST.old" ]; then
-    if [ -e "$DEST" ]; then rm -rf "$DEST.old"; else mv "$DEST.old" "$DEST"; fi
-  fi
+  restore_old
+  rm -rf "$TMP" "$DEST.new" 2>/dev/null || true
+  if [ -e "$DEST" ] && [ -d "$DEST.old" ]; then rm -rf "$DEST.old" 2>/dev/null || true; fi
+}
+
+# Prints the tag of the newest release that is not a draft or a prerelease
+# and starts with v and a digit. GitHub lists the newest release first.
+# Cutting the JSON at commas and brackets puts every key on its own line,
+# whatever the layout. Quotes inside strings are escaped, so a release note
+# cannot look like a key.
+newest_compiler_tag() {
+  curl -fsSL "$API/releases?per_page=100" | tr ',{}[]' '\n\n\n\n\n' | awk '
+    /^[ \t]*"tag_name"[ \t]*:/ {
+      t = $0; sub(/^[ \t]*"tag_name"[ \t]*:[ \t]*"/, "", t); sub(/".*/, "", t); ht = 1
+    }
+    /^[ \t]*"draft"[ \t]*:/ { d = ($0 ~ /true/); hd = 1 }
+    /^[ \t]*"prerelease"[ \t]*:/ { p = ($0 ~ /true/); hp = 1 }
+    ht && hd && hp {
+      if (!d && !p && t ~ /^v[0-9]/) { print t; exit }
+      ht = 0; hd = 0; hp = 0
+    }'
 }
 
 main() {
   [ -n "${HOME:-}" ] || fail "HOME is not set."
   BASE="${ALAN_BASE_URL:-https://github.com/sleousis/alan-compiler/releases}"
+  API="${ALAN_API_URL:-https://api.github.com/repos/sleousis/alan-compiler}"
   VER="${ALAN_VERSION:-}"
-  if [ -z "$VER" ]; then
-    VER=$(curl -fsSL https://api.github.com/repos/sleousis/alan-compiler/releases/latest \
-          | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
-  fi
-  [ -n "$VER" ] || fail "Could not find the latest Alan release."
+  # GitHub's "latest" release can be an extension release, so the list decides.
+  [ -n "$VER" ] || VER=$(newest_compiler_tag) || VER=
+  [ -n "$VER" ] || fail "Could not find an Alan compiler release. Check your connection, or set ALAN_VERSION to a tag such as v2.0.0."
   case "$(uname -s)" in
     Linux) OS=linux ;;
     Darwin) OS=macos ;;
@@ -59,6 +82,7 @@ main() {
   GOT=$($SHA "$TMP/$NAME" | awk '{ print $1 }')
   [ "$GOT" = "$WANT" ] || fail "Checksum mismatch for $NAME. Nothing was installed."
 
+  restore_old
   rm -rf "$DEST.new" "$DEST.old"; mkdir -p "$DEST.new"
   tar -xzf "$TMP/$NAME" -C "$DEST.new" --strip-components=1
   [ -x "$DEST.new/bin/alanc" ] || fail "$NAME does not hold alan/bin/alanc. Nothing was installed."
@@ -72,16 +96,25 @@ main() {
     [ -d "$DEST.old" ] && mv "$DEST.old" "$DEST"
     fail "Could not move the new install into $DEST. The old one is still there."
   fi
-  rm -rf "$DEST.old"
+  rm -rf "$DEST.old" 2>/dev/null || echo "Could not remove $DEST.old. Delete it later." >&2
   mkdir -p "$HOME/.local/bin"
-  ln -sf "$DEST/bin/alanc" "$HOME/.local/bin/alanc"
+  LINK="$HOME/.local/bin/alanc"
+  # Only a link or nothing is replaced. A real file there belongs to the user.
+  UNINSTALL="rm -rf \"$DEST\""
+  if [ -L "$LINK" ] || [ ! -e "$LINK" ]; then
+    ln -sf "$DEST/bin/alanc" "$LINK"
+    UNINSTALL="$UNINSTALL \"$LINK\""
+  else
+    echo "Warning: $LINK is not a link, so it was left alone and may run another alanc." >&2
+    echo "Remove it and run this installer again, or run $DEST/bin/alanc." >&2
+  fi
   echo "Installed Alan $VER. Run: alanc run hello.alan"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) echo "Add $HOME/.local/bin to your PATH first, for example in your shell profile:"
        echo "  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
   esac
-  echo "To uninstall: rm -rf \"$DEST\" \"$HOME/.local/bin/alanc\""
+  echo "To uninstall: $UNINSTALL"
 }
 
 main "$@"
