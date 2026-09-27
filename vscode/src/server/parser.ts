@@ -9,20 +9,32 @@ import { Pos, Range, Token, TokenKind, lex } from "./lexer";
 /** Thrown after an error is reported. The nearest statement or declaration catches it and resyncs. */
 class ParseError {}
 
+type RelOp = Extract<Cond, { kind: "compare" }>["op"];
+
+/** Deepest nesting of blocks, statements, parentheses and functions the parser follows. */
+const MAX_DEPTH = 500;
+const TOO_DEEP = "Nesting is too deep";
+
 const REL_OPS = new Set<TokenKind>(["==", "!=", "<", ">", "<=", ">="]);
 const ARITH_OPS = new Set<TokenKind>(["+", "-", "*", "/", "%"]);
 /** Tokens that begin a statement no matter where they stand. */
 const STMT_KEYWORDS = new Set<TokenKind>(["kw_if", "kw_while", "kw_return", "{"]);
 
-const samePos = (a: Pos, b: Pos) => a.line === b.line && a.character === b.character;
+const posKey = (p: Pos) => `${p.line}:${p.character}`;
 const comparePos = (a: Pos, b: Pos) => a.line - b.line || a.character - b.character;
 
 class Parser {
   private pos = 0;
   /** Errors met so far, reported or not. A speculative parse failed when this grew. */
   private errorCount = 0;
+  /** Current nesting depth, see nested(). */
+  private depth = 0;
+  /** Start positions that already carry a diagnostic. */
+  private readonly reported: Set<string>;
 
-  constructor(private readonly tokens: Token[], readonly diagnostics: Diagnostic[]) {}
+  constructor(private readonly tokens: Token[], readonly diagnostics: Diagnostic[]) {
+    this.reported = new Set(diagnostics.map((d) => posKey(d.range.start)));
+  }
 
   // ---- helpers ------------------------------------------------------------
 
@@ -70,8 +82,58 @@ class Parser {
   private report(message: string, range: Range, token?: Token) {
     this.errorCount++;
     if (token?.kind === "bad") return;
-    if (this.diagnostics.some((d) => samePos(d.range.start, range.start))) return;
-    this.diagnostics.push({ message, range, severity: "error", source: "alan" });
+    this.add({ message, range, severity: "error", source: "alan" });
+  }
+
+  /** Adds a diagnostic unless one already starts at the same position. */
+  private add(d: Diagnostic) {
+    const key = posKey(d.range.start);
+    if (this.reported.has(key)) return;
+    this.reported.add(key);
+    this.diagnostics.push(d);
+  }
+
+  /** Drops the diagnostics added after the first n, for a rewind. */
+  private truncateDiagnostics(n: number) {
+    for (const d of this.diagnostics.splice(n)) this.reported.delete(posKey(d.range.start));
+  }
+
+  /**
+   * Runs one level of nesting. Past MAX_DEPTH it reports "Nesting is too
+   * deep" (once per file), skips the bracketed group that starts here and
+   * fails, so the stack never overflows and normal recovery takes over.
+   */
+  private nested<T>(parse: () => T): T {
+    if (this.depth >= MAX_DEPTH) {
+      const t = this.peek();
+      if (this.diagnostics.some((d) => d.message === TOO_DEEP)) this.errorCount++;
+      else this.report(TOO_DEEP, t.range, t);
+      if (t.kind === "(" || t.kind === "{") this.skipGroup(t.kind, t.kind === "(" ? ")" : "}");
+      throw new ParseError();
+    }
+    this.depth++;
+    try {
+      return parse();
+    } finally {
+      this.depth--;
+    }
+  }
+
+  /** Skips from an opening bracket past its matching closing one, or to the end of the file. */
+  private skipGroup(open: TokenKind, close: TokenKind) {
+    let level = 0;
+    do {
+      const k = this.next().kind;
+      if (k === open) level++;
+      else if (k === close) level--;
+      else if (k === "eof") return;
+    } while (level > 0);
+  }
+
+  /** Last resort for a bug in the parser: report it at the current token instead of throwing. */
+  internalError(e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    this.add({ message: `Parser failure: ${message}`, range: this.peek().range, severity: "error", source: "alan" });
   }
 
   /** Reports "expected X but found Y" at the current token. */
@@ -104,9 +166,12 @@ class Parser {
     if (!fresh || t.kind === "bad") throw new ParseError();
   }
 
-  /** Skips to a point where a statement can start. Always moves past `from` if still there. */
+  /**
+   * Skips to a point where a statement can start. Moves past `from` if still
+   * there, unless it is the "}" that ends the enclosing block.
+   */
   private syncStmt(from: number) {
-    if (this.pos === from) this.next();
+    if (this.pos === from && !this.at("}")) this.next();
     for (;;) {
       const t = this.peek();
       if (t.kind === "eof" || t.kind === "}" || STMT_KEYWORDS.has(t.kind)) return;
@@ -116,9 +181,12 @@ class Parser {
     }
   }
 
-  /** Skips to a point where a declaration or a function body can start. */
+  /**
+   * Skips to a point where a declaration or a function body can start. Moves
+   * past `from` if still there, unless it is the "{" of the body.
+   */
   private syncDecl(from: number) {
-    if (this.pos === from) this.next();
+    if (this.pos === from && !this.at("{")) this.next();
     for (;;) {
       const t = this.peek();
       if (t.kind === "eof" || t.kind === "{") return;
@@ -167,7 +235,7 @@ class Parser {
     while (!this.at("{") && !this.at("eof")) {
       const from = this.pos;
       try {
-        if (this.at("id") && this.peek(1).kind === "(") locals.push(this.funcDef());
+        if (this.at("id") && this.peek(1).kind === "(") locals.push(this.nested(() => this.funcDef()));
         else if (this.at("id") && this.peek(1).kind === ":") locals.push(this.varDef());
         else if (this.at("id")) { this.next(); this.fail("':' or '('"); }
         else this.fail("'{'");
@@ -253,7 +321,17 @@ class Parser {
   /** A statement that must be there, such as the body of an if. A broken one becomes empty. */
   private innerStmt(): Stmt {
     const first = this.peek();
-    return this.stmt() ?? { kind: "empty", range: this.span(first) };
+    const from = this.pos;
+    let s: Stmt | undefined;
+    try {
+      s = this.nested(() => this.stmt());
+    } catch (e) {
+      if (!(e instanceof ParseError)) throw e;
+      this.syncStmt(this.pos);
+    }
+    if (s) return s;
+    const at = first.range.start;
+    return { kind: "empty", range: this.pos > from ? this.span(first) : { start: at, end: at } };
   }
 
   private stmtOrThrow(): Stmt {
@@ -263,7 +341,7 @@ class Parser {
         this.next();
         return { kind: "empty", range: first.range };
       case "{":
-        return this.block();
+        return this.nested(() => this.block());
       case "kw_if": {
         this.next();
         this.expect("(");
@@ -375,7 +453,7 @@ class Parser {
     const first = this.peek();
     if (first.kind === "+" || first.kind === "-") {
       this.next();
-      const operand = this.unary();
+      const operand = this.nested(() => this.unary());
       return { kind: "unary", op: first.kind, operand, range: this.span(first) };
     }
     return this.primary();
@@ -391,12 +469,13 @@ class Parser {
       case "char":
         this.next();
         return { kind: "char", text: t.text, range: t.range };
-      case "(": {
-        this.next();
-        const inner = this.expr();
-        this.expect(")");
-        return inner;
-      }
+      case "(":
+        return this.nested(() => {
+          this.next();
+          const inner = this.expr();
+          this.expect(")");
+          return inner;
+        });
       case "id":
         return this.peek(1).kind === "(" ? this.call() : this.lvalue();
       case "string":
@@ -434,7 +513,7 @@ class Parser {
   private notCond(): Cond {
     const first = this.peek();
     if (this.eat("!")) {
-      const operand = this.notCond();
+      const operand = this.nested(() => this.notCond());
       return { kind: "not", operand, range: this.span(first) };
     }
     return this.condAtom();
@@ -446,7 +525,7 @@ class Parser {
     if (this.eat("kw_true")) return { kind: "bool", value: true, range: first.range };
     if (this.eat("kw_false")) return { kind: "bool", value: false, range: first.range };
     if (first.kind !== "(") return this.comparison();
-    const tried = this.parenCond();
+    const tried = this.nested(() => this.parenCond());
     if (!("failedAt" in tried)) return tried;
     const saved = { diagnostics: this.diagnostics.length, errors: this.errorCount };
     try {
@@ -455,8 +534,8 @@ class Parser {
       // Both readings failed. Keep the error of the one that got further.
       if (e instanceof ParseError && tried.failedAt > this.pos) {
         this.pos = tried.failedAt;
-        this.diagnostics.length = saved.diagnostics;
-        this.diagnostics.push(...tried.diagnostics);
+        this.truncateDiagnostics(saved.diagnostics);
+        for (const d of tried.diagnostics) this.add(d);
         this.errorCount = saved.errors + tried.errors;
       }
       throw e;
@@ -471,7 +550,7 @@ class Parser {
     if (!REL_OPS.has(opTok.kind)) this.fail("a comparison operator");
     this.next();
     const right = this.expr();
-    return { kind: "compare", op: opTok.kind as "==", left, right, range: this.span(first) };
+    return { kind: "compare", op: opTok.kind as RelOp, left, right, range: this.span(first) };
   }
 
   /**
@@ -499,7 +578,7 @@ class Parser {
       errors: this.errorCount - saved.errors,
     };
     this.pos = saved.pos;
-    this.diagnostics.length = saved.diagnostics;
+    this.truncateDiagnostics(saved.diagnostics);
     this.errorCount = saved.errors;
     return result;
   }
@@ -510,7 +589,13 @@ export function parse(src: string): { program?: FuncDecl; diagnostics: Diagnosti
   const diagnostics: Diagnostic[] = errors.map((e) => ({
     message: e.message, range: e.range, severity: "error", source: "alan",
   }));
-  const program = new Parser(tokens, diagnostics).program();
+  const parser = new Parser(tokens, diagnostics);
+  let program: FuncDecl | undefined;
+  try {
+    program = parser.program();
+  } catch (e) {
+    parser.internalError(e);
+  }
   diagnostics.sort((a, b) => comparePos(a.range.start, b.range.start));
   return program ? { program, diagnostics } : { diagnostics };
 }

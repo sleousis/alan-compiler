@@ -102,6 +102,43 @@ describe("parser", () => {
   });
   it("ends on every prefix of an example without throwing", () => {
     const src = fs.readFileSync(path.join(ex, "BubbleSort.alan"), "utf8");
-    for (let i = 0; i <= src.length; i++) parse(src.slice(0, i));
+    for (let i = 0; i <= src.length; i++) {
+      const starts = parse(src.slice(0, i)).diagnostics.map(d => `${d.range.start.line}:${d.range.start.character}`);
+      assert.equal(new Set(starts).size, starts.length, `prefix ${i}`);
+    }
+  });
+
+  const tooDeep = (src: string) =>
+    parse(src).diagnostics.filter(d => d.message === "Nesting is too deep").length;
+  const n = 10000;
+  it("stops at deeply nested parentheses in a condition", () => {
+    assert.equal(tooDeep(`m () : proc\n x : int;\n{ if (${"(".repeat(n)}x == 1${")".repeat(n)}) ; }`), 1);
+  });
+  it("stops at deeply nested parentheses in an expression", () => {
+    const r = body(`x = ${"(".repeat(n)}1${")".repeat(n)}; x = 2;`);
+    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
+    assert.equal(r.program!.body.stmts.length, 1);
+  });
+  it("stops at deeply nested blocks", () => {
+    const r = body(`${"{".repeat(n)}${"}".repeat(n)}`);
+    assert.deepEqual(r.diagnostics.map(d => d.message), ["Nesting is too deep"]);
+  });
+  it("stops at other deep chains without throwing", () => {
+    assert.equal(tooDeep(`m () : proc\n{ ${"if (true) ".repeat(n)}; }`), 1);
+    assert.equal(tooDeep(`m () : proc\n{ if (${"!".repeat(n)}true) ; }`), 1);
+    assert.equal(tooDeep(`m () : proc\n x : int;\n{ x = ${"- ".repeat(n)}1; }`), 1);
+    assert.equal(tooDeep(`${"f () : proc\n".repeat(n)}${"{ }\n".repeat(n)}`), 1);
+  });
+  it("does not swallow the closing brace after a missing if body", () => {
+    const r = parse("m () : proc\n{\n  if (x > 0)\n}\n");
+    assert.equal(r.diagnostics.length, 1);
+    assert.deepEqual(r.diagnostics[0].range.start, { line: 3, character: 0 });
+    assert.match(r.diagnostics[0].message, /statement/);
+  });
+  it("keeps the main body apart from a nested function ending in a broken while", () => {
+    const r = parse("m () : proc\n f () : proc\n {\n   while (true)\n }\n{\n  f();\n}\n");
+    assert.equal(r.diagnostics.length, 1);
+    assert.equal(r.program!.body.stmts.length, 1);
+    assert.equal((r.program!.locals[0] as any).body.stmts.length, 1);
   });
 });
