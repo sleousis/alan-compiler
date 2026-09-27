@@ -11,7 +11,8 @@ export type TokenKind =
   | "eof" | "bad";
 export interface Pos { line: number; character: number; }        // 0-based, LSP style
 export interface Range { start: Pos; end: Pos; }
-export interface Token { kind: TokenKind; text: string; range: Range; }
+/** flawed marks a token that is usable but carries a lexer error, such as an int that is out of range. */
+export interface Token { kind: TokenKind; text: string; range: Range; flawed?: true; }
 export interface LexError { message: string; range: Range; }
 /** A comment kept by lex(src, { keepComments: true }). Block comments include their nested parts. */
 export interface Comment { text: string; range: Range; block: boolean; }
@@ -180,7 +181,10 @@ export function lex(src: string, options: LexOptions = {}): { tokens: Token[]; e
       } else {
         // The token stays an int, so the rest of the statement still parses.
         const token = emit("int", j - i);
-        if (BigInt(token.text) > INT_MAX) errors.push({ message: MSG.intOutOfRange(token.text), range: token.range });
+        if (BigInt(token.text) > INT_MAX) {
+          token.flawed = true;
+          errors.push({ message: MSG.intOutOfRange(token.text), range: token.range });
+        }
       }
       continue;
     }

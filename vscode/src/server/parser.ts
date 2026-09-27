@@ -15,6 +15,8 @@ import { Task, run } from "./trampoline";
 class ParseError {}
 
 type RelOp = Extract<Cond, { kind: "compare" }>["op"];
+/** A parse of an expression at some token, see expr. A failed one has no node. */
+type ExprOutcome = { node?: Expr; end: number; held: boolean; diagnostics: Diagnostic[]; errors: number };
 /** What a failed try of "(" cond ")" reported, see parenCond. */
 type ParenFailure = { failedAt: number; diagnostics: Diagnostic[]; errors: number };
 
@@ -39,6 +41,13 @@ class Parser {
    * a token of their own or pass on what their last part left.
    */
   private readonly lookahead = new WeakSet<Expr>();
+  /**
+   * The outcome of parsing an expression at each token index. A condition
+   * in parentheses is tried as a condition first and then as an expression,
+   * and without this each level of parentheses would parse everything
+   * inside it again, which takes quadratic time.
+   */
+  private readonly exprs = new Map<number, ExprOutcome>();
 
   constructor(private readonly tokens: Token[], readonly diagnostics: Diagnostic[]) {
     this.reported = new Set(diagnostics.map((d) => posKey(d.range.start)));
@@ -89,12 +98,13 @@ class Parser {
   }
 
   /**
-   * Records an error unless it sits on a bad token (the lexer already said
-   * why) or another error already starts at the same position.
+   * Records an error unless it sits on a token with a lexer error (the lexer
+   * already said why, and the compiler stops there) or another error
+   * already starts at the same position.
    */
   private report(message: string, range: Range, token?: Token) {
     this.errorCount++;
-    if (token?.kind === "bad") return;
+    if (token?.kind === "bad" || token?.flawed) return;
     this.add({ message, range, severity: "error", source: "alan" });
   }
 
@@ -409,8 +419,40 @@ class Parser {
     return k === "int" || k === "char" || k === "string" || k === "id" || k === "(" || k === "+" || k === "-";
   }
 
-  /** expr = term {("+"|"-") term} */
+  /**
+   * expr, remembered by where it starts. Parsing an expression depends only
+   * on where it starts, so a second parse there replays the first one: its
+   * errors, where it ended, and whether it failed.
+   */
   private *expr(): Task<Expr> {
+    const start = this.pos;
+    const seen = this.exprs.get(start);
+    if (seen) {
+      for (const d of seen.diagnostics) this.add(d);
+      this.errorCount += seen.errors;
+      this.pos = seen.end;
+      if (!seen.node) throw new ParseError();
+      if (seen.held) this.lookahead.add(seen.node);
+      else this.lookahead.delete(seen.node);
+      return seen.node;
+    }
+    const before = { diagnostics: this.diagnostics.length, errors: this.errorCount };
+    const remember = (node?: Expr) => this.exprs.set(start, {
+      node, end: this.pos, held: !!node && this.lookahead.has(node),
+      diagnostics: this.diagnostics.slice(before.diagnostics), errors: this.errorCount - before.errors,
+    });
+    try {
+      const node = (yield this.sum()) as Expr;
+      remember(node);
+      return node;
+    } catch (e) {
+      if (e instanceof ParseError) remember();
+      throw e;
+    }
+  }
+
+  /** expr = term {("+"|"-") term} */
+  private *sum(): Task<Expr> {
     const first = this.peek();
     let left = (yield this.term()) as Expr;
     while (this.at("+") || this.at("-")) {
