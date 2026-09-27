@@ -1,0 +1,5 @@
+-- A character constant holds one character.
+main () : proc
+{
+  writeChar('ab');
+}

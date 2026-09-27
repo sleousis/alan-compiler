@@ -1,0 +1,8 @@
+-- Inside f, the parameter f hides the function f.
+main () : proc
+  f (f : int) : int
+  {
+    return f(1);
+  }
+{
+}

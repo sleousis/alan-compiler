@@ -1,0 +1,6 @@
+-- A call statement must call a proc (spec 1.5).
+main () : proc
+  f () : int { return 1; }
+{
+  f();
+}

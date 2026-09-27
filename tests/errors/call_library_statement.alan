@@ -1,0 +1,5 @@
+-- A call statement must call a proc, library ones too (spec 1.5).
+main () : proc
+{
+  readChar();
+}
