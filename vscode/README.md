@@ -50,7 +50,7 @@ Compile errors from Run and Build show in the Problems panel.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `alan.compilerPath` | empty | Path to `alanc`. Empty means the installed copy or `alanc` on PATH. |
-| `alan.optimize` | `true` | Pass `-O` to the compiler when running and building. Debug builds are never optimized. |
+| `alan.optimize` | `true` | Pass `-O` to the compiler for Run, Build and Show IR. Debug builds are never optimized. |
 | `alan.useWsl` | `false` | On Windows, install and run the compiler inside WSL. |
 | `alan.checkOnSave` | `true` | Run `alanc check` when a file is saved. |
 

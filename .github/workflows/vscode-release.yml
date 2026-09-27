@@ -46,7 +46,7 @@ jobs:
 
       - name: Package
         run: |
-          npx vsce package --out "alan-$GITHUB_REF_NAME.vsix"
+          npm run package -- --out "alan-$GITHUB_REF_NAME.vsix"
           ls -l *.vsix
 
       - name: Create GitHub release
@@ -62,6 +62,8 @@ jobs:
 
       # Publishing needs a token for each store and a package.json without
       # "private": true. Anything missing skips that step with a warning.
+      # Prerelease tags (with a "-", such as vscode-v1.1.0-rc.1) get a GitHub
+      # release only and are never published to the stores.
       - name: Decide what to publish
         id: publish
         env:
@@ -99,6 +101,7 @@ jobs:
 
       - name: Publish to Open VSX
         if: steps.publish.outputs.openvsx == 'true'
-        run: npx --yes ovsx@1 publish "alan-$GITHUB_REF_NAME.vsix" -p "$OVSX_PAT"
+        # ovsx reads the token from OVSX_PAT.
+        run: npx --yes ovsx@1 publish "alan-$GITHUB_REF_NAME.vsix"
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}

@@ -508,12 +508,6 @@ jobs:
           cache: npm
           cache-dependency-path: vscode/package-lock.json
 
-      # The end-to-end tests download VS Code into .vscode-test.
-      - uses: actions/cache@v6
-        with:
-          path: vscode/.vscode-test/vscode-*
-          key: vscode-test-${{ runner.os }}-${{ hashFiles('vscode/package-lock.json') }}
-
       - run: npm ci
       - run: npm run build
       - run: npm run typecheck
@@ -529,7 +523,7 @@ jobs:
           fi
 
       - name: Package
-        run: npx vsce package --out alan.vsix
+        run: npm run package -- --out alan.vsix
 
       - uses: actions/upload-artifact@v7
         with:

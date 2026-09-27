@@ -19,9 +19,22 @@ async function eventually<T>(what: string, ms: number, probe: () => Promise<T | 
   }
 }
 
-async function completionLabels(uri: vscode.Uri, pos: vscode.Position): Promise<string[]> {
+async function completionItems(uri: vscode.Uri, pos: vscode.Position): Promise<vscode.CompletionItem[]> {
   const list = await vscode.commands.executeCommand<vscode.CompletionList>("vscode.executeCompletionItemProvider", uri, pos);
-  return list.items.map((i) => (typeof i.label === "string" ? i.label : i.label.label));
+  return list.items;
+}
+
+const labelOf = (i: vscode.CompletionItem) => (typeof i.label === "string" ? i.label : i.label.label);
+
+/**
+ * The language server's completion item for a library function, if it answered.
+ * VS Code also offers the words of the file as plain text items, so only a
+ * function item with the signature as detail counts.
+ */
+async function libraryItem(uri: vscode.Uri, name: string): Promise<vscode.CompletionItem | undefined> {
+  // Line 50 of BubbleSort.alan, `i = 0;` in the main block.
+  const items = await completionItems(uri, new vscode.Position(49, 1));
+  return items.find((i) => labelOf(i) === name && i.kind === vscode.CompletionItemKind.Function && i.detail?.startsWith(`${name} (`));
 }
 
 function hoverAt(doc: vscode.TextDocument, pos: vscode.Position): Thenable<vscode.Hover[]> {
@@ -49,21 +62,17 @@ describe("Alan extension", function () {
     doc = await vscode.workspace.openTextDocument(bubbleSort);
     await vscode.window.showTextDocument(doc);
     await ext.activate();
-    // The language server starts when the first Alan document opens.
-    await eventually("the language server", 60_000, async () => {
-      const labels = await completionLabels(doc.uri, new vscode.Position(49, 1));
-      return labels.length ? labels : undefined;
-    });
-    // On the macOS and Windows runners the first hover right after startup
-    // sometimes comes back empty and the next one answers, so the tests
-    // start once hover answers too.
-    await eventually("the first hover", 10_000, async () => hoverText(await hoverAt(doc, new vscode.Position(56, 2))) || undefined);
+    // The language server starts when the first Alan document opens. It is
+    // ready once it offers a library function the file does not mention.
+    await eventually("the language server", 60_000, () => libraryItem(doc.uri, "readInteger"));
   });
 
   it("offers library functions inside the main block", async () => {
-    // Line 50 of BubbleSort.alan, `i = 0;` in the main block.
-    const labels = await completionLabels(doc.uri, new vscode.Position(49, 1));
-    assert.ok(labels.includes("writeInteger"), `writeInteger missing from ${labels.join(", ")}`);
+    // strlen appears nowhere in BubbleSort.alan, so only the server can offer it.
+    for (const name of ["writeInteger", "strlen"]) {
+      const item = await libraryItem(doc.uri, name);
+      assert.ok(item, `the server offers ${name}`);
+    }
   });
 
   it("hovers a call with the function's signature", async () => {
@@ -74,8 +83,7 @@ describe("Alan extension", function () {
 
   it("reports a syntax error within 2 seconds of typing it", async () => {
     const copy = await scratch(fs.readFileSync(bubbleSort, "utf8"));
-    await eventually("a clean first analysis", 10_000, async () =>
-      (await completionLabels(copy.uri, new vscode.Position(49, 1))).length ? true : undefined);
+    await eventually("the server to know the copy", 10_000, () => libraryItem(copy.uri, "readInteger"));
     assert.equal(vscode.languages.getDiagnostics(copy.uri).length, 0);
     const edit = new vscode.WorkspaceEdit();
     edit.insert(copy.uri, new vscode.Position(48, 1), "x = ;\n\t");
