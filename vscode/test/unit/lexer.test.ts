@@ -97,7 +97,11 @@ describe("lexer", () => {
     };
     assert.deepEqual(first('x "a\\qb" y'), ["Invalid escape sequence \\q in string literal", 4, 6]);
     assert.deepEqual(first('x "a\\x4g"'), ["Invalid escape sequence \\x in string literal", 4, 6]);
-    assert.deepEqual(first('x "ab\\'), ["Invalid escape sequence \\ in string literal", 5, 6]);
+    // A backslash at the end of a line or of the file leaves the string open.
+    assert.deepEqual(first('x "ab\\'), ["String literal not closed on this line", 2, 6]);
+    assert.deepEqual(first('x "ab\\\ny'), ["String literal not closed on this line", 2, 6]);
+    assert.deepEqual(first('x "ab\\\r\ny'), ["String literal not closed on this line", 2, 6]);
+    assert.deepEqual(first('x "ab\\\u0000"'), ["Invalid escape sequence \\ in string literal", 5, 7]);
     assert.deepEqual(first('x "a\u0000b"'), ["NUL character in string literal", 4, 5]);
     assert.deepEqual(first('x "abc\ny'), ["String literal not closed on this line", 2, 6]);
     // lexer.l prefers "not closed" when an escaped quote ends the line.

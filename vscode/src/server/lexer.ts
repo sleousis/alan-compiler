@@ -68,12 +68,11 @@ function readString(src: string, i: number): { end: number } | { stop: number; m
     if (c === "\\") {
       const n = escapeLength(src, j);
       if (n > 0) { j += n; continue; }
-      // lexer.l names the character after the backslash, unless it is a line break or NUL.
-      // A CRLF line end is a line break too, as the compiler reads text files on Windows.
+      // A backslash at the end of the line (before CR LF too) leaves the string open.
       const next = src[j + 1];
-      const lineBreak = next === "\n" || (next === "\r" && src[j + 2] === "\n");
-      const named = next === undefined || lineBreak || next === "\u0000" ? "" : next;
-      return { stop: j, message: MSG.invalidEscape(named) };
+      if (next === undefined || next === "\n" || next === "\r") return { stop: j, message: MSG.stringNotClosed };
+      // lexer.l prints the character after the backslash as a C string, so NUL prints as nothing.
+      return { stop: j, message: MSG.invalidEscape(next === "\u0000" ? "" : next) };
     }
     if (c === undefined || c === "\n") return { stop: j, message: MSG.stringNotClosed };
     if (c === "\u0000") return { stop: j, message: MSG.nulInString };
