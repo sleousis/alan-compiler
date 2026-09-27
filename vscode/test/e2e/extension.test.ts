@@ -24,6 +24,10 @@ async function completionLabels(uri: vscode.Uri, pos: vscode.Position): Promise<
   return list.items.map((i) => (typeof i.label === "string" ? i.label : i.label.label));
 }
 
+function hoverAt(doc: vscode.TextDocument, pos: vscode.Position): Thenable<vscode.Hover[]> {
+  return vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", doc.uri, pos);
+}
+
 function hoverText(hovers: vscode.Hover[]): string {
   return hovers.flatMap((h) => h.contents.map((c) => (typeof c === "string" ? c : c.value))).join("\n");
 }
@@ -50,6 +54,10 @@ describe("Alan extension", function () {
       const labels = await completionLabels(doc.uri, new vscode.Position(49, 1));
       return labels.length ? labels : undefined;
     });
+    // On the macOS and Windows runners the first hover right after startup
+    // sometimes comes back empty and the next one answers, so the tests
+    // start once hover answers too.
+    await eventually("the first hover", 10_000, async () => hoverText(await hoverAt(doc, new vscode.Position(56, 2))) || undefined);
   });
 
   it("offers library functions inside the main block", async () => {
@@ -60,7 +68,7 @@ describe("Alan extension", function () {
 
   it("hovers a call with the function's signature", async () => {
     // Line 57, `bsort(16, x);`.
-    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", doc.uri, new vscode.Position(56, 2));
+    const hovers = await hoverAt(doc, new vscode.Position(56, 2));
     assert.match(hoverText(hovers), /bsort \(n : int, x : reference int\[\]\) : proc/);
   });
 
