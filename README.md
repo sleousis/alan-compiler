@@ -164,3 +164,7 @@ That runtime lives in a NASM section called `.code`, which is not marked executa
 ## Author
 
 Savvas Leousis
+
+## License
+
+The [MIT License](LICENSE) covers the work of Savvas Leousis in this repository. The symbol table and error handler (`symbol.*`, `general.*`, `error.*`), the assembly library in `alan_lib_v2/` and the language specification `alan2018.pdf` come from the NTUA Compilers course and are not covered by it. [NOTICE](NOTICE) lists their authors.

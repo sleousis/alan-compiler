@@ -387,6 +387,8 @@ jobs:
           esac
           test -f "$smoke/alan/lib/libalanrt.a"
           test -f "$smoke/alan/README.txt"
+          test -f "$smoke/alan/LICENSE"
+          test -f "$smoke/alan/NOTICE"
           tr -d '\r' < "$smoke/alan/VERSION" | grep -qx "$VERSION"
           version=$("$alanc" --version | tr -d '\r')
           echo "$version"

@@ -1,0 +1,21 @@
+Alan compiler and editor support
+
+The MIT License in LICENSE covers the work of Savvas Leousis in this
+repository. It does not cover the files listed below, which come from the
+Compilers course of the School of Electrical and Computer Engineering,
+National Technical University of Athens (NTUA). Their authors keep all
+rights to them.
+
+- symbol.cpp, symbol.hpp, general.cpp, general.hpp, error.cpp, error.hpp
+  Generic symbol table and error handler, written by Nikolaos S. Papaspyrou
+  (Software Engineering Laboratory, NTUA), 2003-2004. Modified for this
+  compiler.
+
+- alan_lib_v2/
+  The x86-64 assembly runtime library provided with the course.
+
+- alan2018.pdf
+  The Alan language specification of the course, 2018.
+
+The compiler bundles also contain Zig (MIT License, in the zig folder of each
+bundle) and code from LLVM (Apache License 2.0 with LLVM Exceptions).

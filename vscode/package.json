@@ -4,8 +4,7 @@
   "description": "Alan language support: highlighting, live errors, completion, one-click run and debugging.",
   "version": "1.0.0",
   "publisher": "sleousis",
-  "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/sleousis/alan-compiler"
