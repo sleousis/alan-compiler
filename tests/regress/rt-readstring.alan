@@ -1,0 +1,18 @@
+-- readString goes on with the rest of a long line
+main () : proc
+  s : byte [4];
+  t : byte [10];
+{
+  readString(4, s);
+  readString(10, t);
+  writeString("s=["); writeString(s); writeString("] ");
+  writeString("t=["); writeString(t); writeString("]\n");
+  readString(4, s);
+  readString(10, t);
+  writeString("s=["); writeString(s); writeString("] ");
+  writeString("t=["); writeString(t); writeString("]\n");
+  readString(4, s);
+  readString(10, t);
+  writeString("s=["); writeString(s); writeString("] ");
+  writeString("t=["); writeString(t); writeString("]\n");
+}

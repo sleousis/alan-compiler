@@ -136,5 +136,35 @@
     "file": "tests/comments/comments.alan",
     "input": null,
     "opt": true
+  },
+  {
+    "name": "rt-readinteger",
+    "file": "tests/regress/rt-readinteger.alan",
+    "input": "inputs/rt-readinteger.txt",
+    "opt": true
+  },
+  {
+    "name": "rt-writeinteger",
+    "file": "tests/regress/rt-writeinteger.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "rt-readstring",
+    "file": "tests/regress/rt-readstring.alan",
+    "input": "inputs/rt-readstring.txt",
+    "opt": true
+  },
+  {
+    "name": "rt-writechar-zero",
+    "file": "tests/regress/rt-writechar-zero.alan",
+    "input": null,
+    "opt": true
+  },
+  {
+    "name": "rt-stdin-bytes",
+    "file": "tests/regress/rt-stdin-bytes.alan",
+    "input": "inputs/rt-stdin-bytes.txt",
+    "opt": true
   }
 ]

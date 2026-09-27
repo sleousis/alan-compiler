@@ -1,0 +1,10 @@
+-- writeChar prints nothing for byte 0
+main () : proc
+  c : byte;
+{
+  c = readChar();
+  writeString("[");
+  writeChar(c);
+  writeChar('\0');
+  writeString("]\n");
+}

@@ -25,8 +25,8 @@ static uint16_t parse_int16(const char *s) {
 int32_t alan_readInteger(void) {
     char line[256];
     line[0] = (char)alan_readChar();
-    alan_readString(255, line + 1);
-    return (int32_t)parse_int16(line);      /* zero-extended like the assembly */
+    alan_rt_readLine(255, line + 1);         /* the whole line is used up */
+    return (int32_t)(int16_t)parse_int16(line);   /* a 16-bit signed value */
 }
 
 uint8_t alan_readByte(void) { return (uint8_t)(alan_readInteger() & 0xFF); }

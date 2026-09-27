@@ -1,0 +1,12 @@
+-- every input byte reaches the program
+main () : proc
+  s : byte [20];
+  n : int;
+{
+  readString(20, s);
+  writeInteger(strlen(s)); writeString(" ["); writeString(s); writeString("]\n");
+  n = readInteger();
+  writeInteger(n); writeString("\n");
+  readString(20, s);
+  writeString("["); writeString(s); writeString("]\n");
+}
