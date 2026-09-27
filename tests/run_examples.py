@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Runs every case through `alanc run` and compares with tests/expected."""
-import argparse, difflib, json, pathlib, subprocess, sys
+import argparse, difflib, json, os, pathlib, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+# ALAN_EXAMPLES_DIR runs the cases of Examples/ from another folder, such as formatted copies.
+EXAMPLES = pathlib.Path(os.environ.get("ALAN_EXAMPLES_DIR") or ROOT / "Examples")
+
+def source(file: str) -> pathlib.Path:
+    if file.startswith("Examples/"):
+        return EXAMPLES / file[len("Examples/"):]
+    return ROOT / file
 
 def normalize(b: bytes) -> str:
     return b.replace(b"\r\n", b"\n").decode("latin-1")
@@ -17,7 +24,7 @@ def main() -> int:
     for c in cases:
         if a.only and c["name"] != a.only:
             continue
-        cmd = [a.alanc, "run", str(ROOT / c["file"])] + (["-O"] if c["opt"] else [])
+        cmd = [a.alanc, "run", str(source(c["file"]))] + (["-O"] if c["opt"] else [])
         stdin = (ROOT / "tests" / c["input"]).read_bytes() if c["input"] else b""
         r = subprocess.run(cmd, input=stdin, capture_output=True, timeout=120)
         want = normalize((ROOT / "tests/expected" / (c["name"] + ".txt")).read_bytes())

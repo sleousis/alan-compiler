@@ -105,6 +105,11 @@
         }
       }
     },
+    "configurationDefaults": {
+      "[alan]": {
+        "editor.defaultFormatter": "sleousis.alan"
+      }
+    },
     "taskDefinitions": [
       {
         "type": "alan",

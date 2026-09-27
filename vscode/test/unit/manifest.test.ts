@@ -25,6 +25,11 @@ describe("extension manifest", () => {
     assert.equal(manifest.engines.vscode, `^${manifest.devDependencies["@types/vscode"]}`);
   });
 
+  it("makes the extension the default formatter for Alan", () => {
+    assert.equal(manifest.contributes.configurationDefaults["[alan]"]["editor.defaultFormatter"], "sleousis.alan");
+    assert.equal(`${manifest.publisher}.${manifest.name}`, "sleousis.alan");
+  });
+
   it("offers the four snippets", () => {
     const [entry] = manifest.contributes.snippets;
     const prefixes = Object.values(readJson(entry.path)).map((s) => (s as { prefix: string }).prefix);

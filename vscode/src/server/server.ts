@@ -4,12 +4,12 @@
 // has a syntax error.
 import {
   CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, DocumentSymbol, MarkupKind,
-  ProposedFeatures, SymbolKind, TextDocumentSyncKind, TextDocuments, createConnection,
+  ProposedFeatures, SymbolKind, TextDocumentSyncKind, TextDocuments, TextEdit, createConnection,
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   CompletionEntry, OutlineSymbol, analyzeSource, completions, computeDiagnostics, definition, documentSymbols,
-  hover, mergeDiagnostics, signatureHelp,
+  formatDocument, formatRange, hover, mergeDiagnostics, signatureHelp,
 } from "./features";
 import { Analysis } from "./scopes";
 
@@ -90,6 +90,8 @@ connection.onInitialize(() => ({
     signatureHelpProvider: { triggerCharacters: ["(", ","] },
     definitionProvider: true,
     documentSymbolProvider: true,
+    documentFormattingProvider: true,
+    documentRangeFormattingProvider: true,
   },
 }));
 
@@ -169,6 +171,20 @@ function toDocumentSymbol(s: OutlineSymbol): DocumentSymbol {
 connection.onDocumentSymbol((p) => guard("Outline", [], () => {
   const doc = documents.get(p.textDocument.uri);
   return doc ? documentSymbols(doc.getText()).map(toDocumentSymbol) : [];
+}));
+
+connection.onDocumentFormatting((p): TextEdit[] => guard("Formatting", [], () => {
+  const doc = documents.get(p.textDocument.uri);
+  const text = doc?.getText();
+  const formatted = text === undefined ? undefined : formatDocument(text, p.options);
+  if (!doc || formatted === undefined || formatted === text) return [];
+  return [TextEdit.replace({ start: { line: 0, character: 0 }, end: doc.positionAt(text!.length) }, formatted)];
+}));
+
+connection.onDocumentRangeFormatting((p): TextEdit[] => guard("Range formatting", [], () => {
+  const doc = documents.get(p.textDocument.uri);
+  const edit = doc && formatRange(doc.getText(), p.range, p.options);
+  return edit ? [TextEdit.replace(edit.range, edit.newText)] : [];
 }));
 
 documents.listen(connection);

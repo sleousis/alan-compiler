@@ -9,3 +9,5 @@ export { hover, signatureHelp } from "./hover";
 export type { SignatureInfo } from "./hover";
 export { definition, documentSymbols } from "./symbols";
 export type { OutlineSymbol } from "./symbols";
+export { formatDocument, formatRange } from "./format";
+export type { FormatOptions } from "./format";
