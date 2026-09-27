@@ -31,7 +31,7 @@ The extension looks for the compiler in this order: `alan.compilerPath`, the cop
 
 Bundles exist for Windows, Linux and macOS 12 or later, each on x64 and ARM64. On Windows you can also run the compiler inside WSL. Turn on `alan.useWsl` and run **Alan: Install or Update Compiler**, and the Linux bundle is installed in your default WSL distribution.
 
-Debugging uses the [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) extension, which VS Code installs together with this one.
+Debugging uses the [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) extension, which VS Code installs together with this one. On an ARM64 Mac or Windows PC, use the native ARM64 build of VS Code. The x64 build installs the ARM64 compiler to match the machine, but its x64 CodeLLDB cannot debug ARM64 programs.
 
 ## Commands
 
